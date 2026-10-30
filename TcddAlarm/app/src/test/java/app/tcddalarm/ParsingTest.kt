@@ -46,8 +46,8 @@ class ParsingTest {
         assertEquals(false, by.getValue("2").free)
         assertEquals("E", by.getValue("2").gender)
         // aynı blok: 1-2 ve 3-4; koridor bloğu böler
-        assertEquals(by.getValue("1").blk, by.getValue("2").blk)
-        assertNotEquals(by.getValue("1").blk, by.getValue("3").blk)
+        assertEquals(by.getValue("1").block, by.getValue("2").block)
+        assertNotEquals(by.getValue("1").block, by.getValue("3").block)
         // masa: karşılıklı sıralar aynı grupta, komşu masa farklı grupta
         assertNotNull(by.getValue("1").group)
         assertEquals(by.getValue("1").group, by.getValue("5").group)
@@ -70,7 +70,7 @@ class ParsingTest {
         val p = Planner.makePlan(sm, Prefs(listOf("E", "E"), setOf(Kind.ECONOMY), facing = true))!!
         assertTrue(p.unmet.isEmpty())
         assertEquals(1, p.seats.map { it.group }.toSet().size)
-        assertEquals(2, p.seats.map { it.rot }.toSet().size)
+        assertEquals(2, p.seats.map { it.rotation }.toSet().size)
     }
 
     @Test
@@ -97,7 +97,7 @@ class ParsingTest {
 
     @Test
     fun parsesStationsWithPairs() {
-        val st = TcddApi.parseStations(
+        val st = Responses.parseStations(
             parseJson(
                 """[{"id":98,"name":"ANKARA GAR","ticketSaleActive":true,"pairs":[48,{"id":60}]},
                     {"id":5,"name":"KAPALI","ticketSaleActive":false},
@@ -125,24 +125,26 @@ class ParsingTest {
             {"cabinClass":{"name":"TEKERLEKLİ SANDALYE"},"availabilityCount":2}]
         }]}]}]}
         """
-        val eco = TcddApi.parseTrains(parseJson(json), setOf(Kind.ECONOMY))
+        val eco = Responses.parseTrains(parseJson(json), setOf(Kind.ECONOMY))
         assertEquals(1, eco.size)
         assertEquals("YHT ANKARA - İSTANBUL", eco[0].name)
         assertEquals(7, eco[0].seats)
         assertEquals(172246, eco[0].id)
         // biniş istasyonu (98) segmentinin saati seçilir, ilk segmentinki değil
         assertEquals(1793350800000L, eco[0].departure!!.toInstant().toEpochMilli())
-        val all = TcddApi.parseTrains(parseJson(json), setOf(Kind.ECONOMY, Kind.BUSINESS, Kind.WHEELCHAIR))
+        val allKinds = setOf(Kind.ECONOMY, Kind.BUSINESS, Kind.WHEELCHAIR)
+        val all = Responses.parseTrains(parseJson(json), allKinds)
         assertEquals(12, all[0].seats)
-        val wheel = TcddApi.parseTrains(parseJson(json), setOf(Kind.WHEELCHAIR))
+        val wheel = Responses.parseTrains(parseJson(json), setOf(Kind.WHEELCHAIR))
         assertEquals(2, wheel[0].seats)
-        assertNull(TcddApi.parseTrains(parseJson("""{"x":1}"""), setOf(Kind.ECONOMY)).firstOrNull())
+        val unknown = Responses.parseTrains(parseJson("""{"x":1}"""), setOf(Kind.ECONOMY))
+        assertNull(unknown.firstOrNull())
     }
 
     @Test
     fun dateParamIsPreviousDay2100() {
-        assertEquals("14-11-2026 21:00:00", TcddApi.dateParam("2026-11-15"))
-        assertEquals("31-12-2026 21:00:00", TcddApi.dateParam("2027-01-01"))
+        assertEquals("14-11-2026 21:00:00", Responses.dateParam("2026-11-15"))
+        assertEquals("31-12-2026 21:00:00", Responses.dateParam("2027-01-01"))
     }
 
     @Test

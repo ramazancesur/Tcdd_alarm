@@ -2,8 +2,8 @@ package app.tcddalarm
 
 import java.time.LocalTime
 
-/** Servis ile ekran arasındaki basit günlük/durum köprüsü (aynı süreçte çalışır). */
-object Bus {
+/** Servis ile ekran arasındaki günlük ve çalışma köprüsü. Yalnızca aynı süreçte geçerlidir. */
+object WatchStatus {
     private val lines = ArrayList<String>()
 
     @Volatile
@@ -17,9 +17,9 @@ object Bus {
         }
 
     @Synchronized
-    fun log(msg: String) {
-        val t = LocalTime.now(TR_ZONE).withNano(0)
-        lines.add("$t  $msg")
+    fun log(message: String) {
+        val time = LocalTime.now(TR_ZONE).withNano(0)
+        lines.add("$time  $message")
         while (lines.size > 200) lines.removeAt(0)
         listener?.invoke()
     }

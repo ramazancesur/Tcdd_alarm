@@ -10,7 +10,8 @@ class BootReceiver : BroadcastReceiver() {
         if (intent?.action != Intent.ACTION_BOOT_COMPLETED) return
         val store = Store(context)
         if (!store.running || store.config == null) return
-        val start = Intent(context, MonitorService::class.java).setAction(MonitorService.ACTION_START)
+        val start = Intent(context, SeatAlarmService::class.java)
+            .setAction(SeatAlarmPolicy.ACTION_START)
         try {
             context.startForegroundService(start)
         } catch (e: Exception) {

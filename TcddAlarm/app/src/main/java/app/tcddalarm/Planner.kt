@@ -3,7 +3,12 @@ package app.tcddalarm
 /** Koltuk önerme motoru (Python sürümündeki seats.py'nin Kotlin karşılığı). */
 object Planner {
 
-    private class Ctx(val hasGroups: Boolean, val hasRot: Boolean, val hasDir: Boolean, val hasGender: Boolean)
+    private class Ctx(
+        val hasGroups: Boolean,
+        val hasRotation: Boolean,
+        val hasDirection: Boolean,
+        val hasGender: Boolean,
+    )
 
     private class Key(val unmet: Int, val w1: Int, val w2: Int, val w3: String, val num: Int, val no: String)
 
@@ -23,8 +28,8 @@ object Planner {
     fun blockKey(s: Seat): String? {
         val row = s.row
         val pos = s.pos
-        val blk = s.blk
-        if (blk != null && row != null) return "${s.wagon}|$row|$blk"
+        val block = s.block
+        if (block != null && row != null) return "${s.wagon}|$row|$block"
         if (row != null && pos != null) return "${s.wagon}|$row|${pos / 2}"
         val n = s.num ?: return null
         return "${s.wagon}|n|${(n - 1) / 2}"
@@ -45,7 +50,7 @@ object Planner {
         if (!ctx.hasGender) return true
         val key = blockKey(seat) ?: return true
         for (n in blocks[key].orEmpty()) {
-            if (n.sid == seat.sid || n.sid in mine || n.free) continue
+            if (n.seatId == seat.seatId || n.seatId in mine || n.free) continue
             // Cinsiyeti bilinmeyen dolu komşu kimseyi elemez.
             if (n.gender != null && n.gender != g) return false
         }
@@ -73,7 +78,7 @@ object Planner {
     private fun assign(
         chosen: List<Seat>, perms: List<List<String>>, blocks: Map<String, List<Seat>>, ctx: Ctx
     ): List<String>? {
-        val mine = chosen.map { it.sid }.toSet()
+        val mine = chosen.map { it.seatId }.toSet()
         for (perm in perms) {
             var ok = true
             for (i in chosen.indices) {
@@ -89,38 +94,69 @@ object Planner {
 
     // --- Tercih değerlendirme -----------------------------------------------------
 
-    private fun evaluate(chosen: List<Seat>, prefs: Prefs, ctx: Ctx): Pair<List<String>, List<String>> {
-        val n = chosen.size
+    /** Her tercih ayrı bir kuraldır; sıra, bildirim metninin sırasını belirler. */
+    private fun evaluate(
+        chosen: List<Seat>,
+        prefs: Prefs,
+        ctx: Ctx,
+    ): Pair<List<String>, List<String>> {
         val unmet = ArrayList<String>()
         val notes = ArrayList<String>()
-        if (n > 1 && prefs.sideBySide) {
-            val ok = if (n == 2) {
-                val k = blockKey(chosen[0])
-                k != null && k == blockKey(chosen[1])
-            } else {
-                val keys = chosen.map { rowKey(it) }.toSet()
-                keys.size == 1 && !keys.contains(null)
-            }
-            if (!ok) unmet.add("yan yana / aynı sıra")
-        }
-        if (n > 1 && prefs.facing) {
-            if (!ctx.hasGroups) {
-                notes.add("Karşılıklı koltuk bilgisi haritadan çıkarılamadı, bu tercih uygulanamadı.")
-            } else {
-                val groups = chosen.map { it.group }.toSet()
-                val rots = chosen.mapNotNull { it.rot }.toSet()
-                val ok = groups.size == 1 && !groups.contains(null) && (rots.size >= 2 || !ctx.hasRot)
-                if (!ok) unmet.add("karşılıklı")
-            }
-        }
-        if ((prefs.direction == "F" || prefs.direction == "B") && !(n > 1 && prefs.facing)) {
-            if (!ctx.hasDir) {
-                notes.add("Koltuk yönü çözülemedi (ayarlardan 'İleri yön rotation değeri' seçilmemiş), bu tercih uygulanamadı.")
-            } else if (chosen.any { it.direction != prefs.direction }) {
-                unmet.add("koltuk yönü")
-            }
-        }
+        sideBySideIssue(chosen, prefs)?.let(unmet::add)
+        facingIssue(chosen, prefs, ctx, notes)?.let(unmet::add)
+        directionIssue(chosen, prefs, ctx, notes)?.let(unmet::add)
         return Pair(unmet, notes)
+    }
+
+    private fun sideBySideIssue(chosen: List<Seat>, prefs: Prefs): String? {
+        if (chosen.size <= 1 || !prefs.sideBySide || sitsTogether(chosen)) return null
+        return "yan yana / aynı sıra"
+    }
+
+    private fun sitsTogether(chosen: List<Seat>): Boolean {
+        if (chosen.size == 2) {
+            val key = blockKey(chosen[0])
+            return key != null && key == blockKey(chosen[1])
+        }
+        val keys = chosen.map { rowKey(it) }.toSet()
+        return keys.size == 1 && null !in keys
+    }
+
+    private fun facingIssue(
+        chosen: List<Seat>,
+        prefs: Prefs,
+        ctx: Ctx,
+        notes: MutableList<String>,
+    ): String? {
+        if (chosen.size <= 1 || !prefs.facing) return null
+        if (!ctx.hasGroups) {
+            notes.add("Karşılıklı koltuk bilgisi haritadan çıkarılamadı, bu tercih uygulanamadı.")
+            return null
+        }
+        val groups = chosen.map { it.group }.toSet()
+        val rotations = chosen.mapNotNull { it.rotation }.toSet()
+        val sameGroup = groups.size == 1 && null !in groups
+        val faces = rotations.size >= 2 || !ctx.hasRotation
+        return if (sameGroup && faces) null else "karşılıklı"
+    }
+
+    private fun directionIssue(
+        chosen: List<Seat>,
+        prefs: Prefs,
+        ctx: Ctx,
+        notes: MutableList<String>,
+    ): String? {
+        val wantsDirection = prefs.direction == "F" || prefs.direction == "B"
+        val facingOverrides = chosen.size > 1 && prefs.facing
+        if (!wantsDirection || facingOverrides) return null
+        if (!ctx.hasDirection) {
+            notes.add(
+                "Koltuk yönü çözülemedi (ayarlardan 'İleri yön rotation değeri' " +
+                    "seçilmemiş), bu tercih uygulanamadı.",
+            )
+            return null
+        }
+        return if (chosen.any { it.direction != prefs.direction }) "koltuk yönü" else null
     }
 
     // --- Aday üretimi -------------------------------------------------------------
@@ -141,7 +177,7 @@ object Planner {
     private fun candidates(pool: List<Seat>, n: Int): List<List<Seat>> {
         val out = LinkedHashMap<Set<String>, List<Seat>>()
         fun add(t: List<Seat>) {
-            out.getOrPut(t.map { it.sid }.toSet()) { t }
+            out.getOrPut(t.map { it.seatId }.toSet()) { t }
         }
         val byWagon = LinkedHashMap<String, MutableList<Seat>>()
         for (s in pool) byWagon.getOrPut(s.wagon) { ArrayList() }.add(s)
@@ -187,8 +223,8 @@ object Planner {
         }
         val ctx = Ctx(
             hasGroups = seats.any { it.group != null },
-            hasRot = seats.any { it.rot != null },
-            hasDir = seats.any { it.direction != null },
+            hasRotation = seats.any { it.rotation != null },
+            hasDirection = seats.any { it.direction != null },
             hasGender = seats.any { !it.free && it.gender != null }
         )
         val perms = permutations(prefs.genders)
@@ -223,7 +259,7 @@ object Planner {
     }
 
     fun stillFree(ids: List<String>, seats: List<Seat>): Boolean {
-        val free = seats.filter { it.free }.map { it.sid }.toSet()
+        val free = seats.filter { it.free }.map { it.seatId }.toSet()
         return ids.all { it in free }
     }
 

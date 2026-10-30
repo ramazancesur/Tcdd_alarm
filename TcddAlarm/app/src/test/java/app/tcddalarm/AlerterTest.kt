@@ -44,7 +44,7 @@ class AlerterTest {
         val seats = listOf(seat(1, 0, 0), seat(2, 0, 1), seat(3, 0, 2))
         a.handle(st, key, head, train(3), seats)
         val first = st.active.getValue(key)
-        val sold = seats.map { if (it.sid == first[0]) it.copy(free = false, gender = "K") else it }
+        val sold = seats.map { if (it.seatId == first[0]) it.copy(free = false, gender = "K") else it }
         a.handle(st, key, head, train(2), sold)
         assertEquals(2, sink.sent.size)
         assertTrue(sink.sent[1].first.contains("satıldı"))
