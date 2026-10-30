@@ -5,9 +5,10 @@ import os
 import unittest
 from pathlib import Path
 
-import seats
-import tcdd_alarm
-from seats import Kind, Prefs, Seat, make_plan, parse_seatmap, tr_norm
+from tcdd import monitor, notify, paths, schedule, stations
+from tcdd.models import Kind, Prefs, Seat, tr_norm
+from tcdd.planner import make_plan
+from tcdd.seatmap import parse_seatmap
 
 
 def seat(no, row, pos, free=True, gender=None, wagon="1", kind=Kind.ECONOMY, rot=None, group=None, direction=None, blk=None, restrict=None):
@@ -203,33 +204,35 @@ class ParseTests(unittest.TestCase):
             '{"id":5,"name":"KAPALI","ticketSaleActive":false},'
             '{"id":48,"name":"İSTANBUL(PENDİK)","pairs":["98"]}]'
         )
-        st = tcdd_alarm.parse_stations(raw)
+        st = stations.parse_stations(raw)
         self.assertEqual(len(st), 2)
-        self.assertEqual(st[0]["name"], "ANKARA GAR")
-        self.assertEqual(st[0]["pairs"], [48, 60])
-        self.assertEqual(st[1]["pairs"], [98])
+        self.assertEqual(st[0].name, "ANKARA GAR")
+        self.assertEqual(st[0].pairs, [48, 60])
+        self.assertEqual(st[1].pairs, [98])
 
     def test_trains_and_boarding_segment(self):
-        eco = tcdd_alarm.extract_trains(TRAIN_JSON, {Kind.ECONOMY})
+        eco = schedule.extract_trains(TRAIN_JSON, {Kind.ECONOMY})
         self.assertEqual(len(eco), 1)
         self.assertEqual(eco[0]["name"], "YHT ANKARA - İSTANBUL")
         self.assertEqual(eco[0]["seats"], 7)
         self.assertEqual(eco[0]["id"], 172246)
         self.assertEqual(int(eco[0]["departure"].timestamp() * 1000), 1793350800000)
-        all_kinds = tcdd_alarm.extract_trains(TRAIN_JSON, {Kind.ECONOMY, Kind.BUSINESS, Kind.WHEELCHAIR})
+        all_kinds = schedule.extract_trains(
+            TRAIN_JSON, {Kind.ECONOMY, Kind.BUSINESS, Kind.WHEELCHAIR}
+        )
         self.assertEqual(all_kinds[0]["seats"], 12)
-        wheel = tcdd_alarm.extract_trains(TRAIN_JSON, {Kind.WHEELCHAIR})
+        wheel = schedule.extract_trains(TRAIN_JSON, {Kind.WHEELCHAIR})
         self.assertEqual(wheel[0]["seats"], 2)
-        self.assertEqual(tcdd_alarm.extract_trains({"x": 1}, {Kind.ECONOMY}), [])
+        self.assertEqual(schedule.extract_trains({"x": 1}, {Kind.ECONOMY}), [])
 
     def test_date_param(self):
-        self.assertEqual(tcdd_alarm.date_param("2026-11-15"), "14-11-2026 21:00:00")
-        self.assertEqual(tcdd_alarm.date_param("2027-01-01"), "31-12-2026 21:00:00")
+        self.assertEqual(schedule.date_param("2026-11-15"), "14-11-2026 21:00:00")
+        self.assertEqual(schedule.date_param("2027-01-01"), "31-12-2026 21:00:00")
 
     def test_in_range_uses_istanbul(self):
         utc = dt.datetime(2026, 11, 15, 6, 0, tzinfo=dt.timezone.utc)
-        self.assertTrue(tcdd_alarm.in_range(utc, "08:00", "10:00"))
-        self.assertFalse(tcdd_alarm.in_range(utc, "05:00", "06:30"))
+        self.assertTrue(schedule.in_range(utc, "08:00", "10:00"))
+        self.assertFalse(schedule.in_range(utc, "05:00", "06:30"))
 
 
 class AlertTests(unittest.TestCase):
@@ -246,7 +249,9 @@ class AlertTests(unittest.TestCase):
         return {"seats": n, "cabins": {"EKONOMİ": n}, "name": "YHT"}
 
     def handle(self, state, train, rows):
-        tcdd_alarm.handle_train(state, self.key, train, rows, self.prefs, self.send, self.route)
+        monitor.handle_train(
+            state, self.key, train, rows, self.prefs, self.send, self.route
+        )
 
     def test_notifies_once(self):
         state = {"active": {}, "count_notified": set()}
@@ -307,16 +312,19 @@ class AlertTests(unittest.TestCase):
         self.assertEqual(self.sent, [])
 
     def test_state_roundtrip(self):
-        original = tcdd_alarm.STATE_FILE
+        original = paths.STATE_FILE
         try:
-            tcdd_alarm.STATE_FILE = Path(self.id().replace(".", "_") + "-state.json")
-            state = {"active": {self.key: ["1-1", "1-2"]}, "count_notified": {"x|y|z"}}
-            tcdd_alarm.save_state(state)
-            back = tcdd_alarm.load_state()
+            paths.STATE_FILE = Path(self.id().replace(".", "_") + "-state.json")
+            state = {
+                "active": {self.key: ["1-1", "1-2"]},
+                "count_notified": {"x|y|z"},
+            }
+            monitor.save_state(state)
+            back = monitor.load_state()
             self.assertEqual(back["active"], state["active"])
             self.assertEqual(back["count_notified"], state["count_notified"])
         finally:
-            tcdd_alarm.STATE_FILE = original
+            paths.STATE_FILE = original
             path = Path(self.id().replace(".", "_") + "-state.json")
             if path.exists():
                 path.unlink()
@@ -326,9 +334,9 @@ class NotifyTests(unittest.TestCase):
     def test_missing_env(self):
         saved = {k: os.environ.pop(k, None) for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD")}
         try:
-            self.assertIn("TELEGRAM_BOT_TOKEN", tcdd_alarm.notify.missing_env("telegram"))
-            self.assertIn("SMTP_HOST", tcdd_alarm.notify.missing_env("both"))
-            self.assertEqual(tcdd_alarm.notify.missing_env("console"), [])
+            self.assertIn("TELEGRAM_BOT_TOKEN", notify.missing_env("telegram"))
+            self.assertIn("SMTP_HOST", notify.missing_env("both"))
+            self.assertEqual(notify.missing_env("console"), [])
         finally:
             for k, v in saved.items():
                 if v is not None:

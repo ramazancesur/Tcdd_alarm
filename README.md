@@ -9,10 +9,10 @@ Python 3.11 veya daha yenisi gerekir.
 ```bash
 pip install -r requirements.txt
 cp .env.example .env
-python tcdd_alarm.py
+python -m tcdd
 ```
 
-`.env` içine Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) veya e-posta (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`) yazın. Kayıtlı ayarla devam etmek için `python tcdd_alarm.py --resume`, bildirimi denemek için `python tcdd_alarm.py --test-notify`, ağ olmadan akışı görmek için `python tcdd_alarm.py --demo`.
+`.env` içine Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) veya e-posta (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`) yazın. Kayıtlı ayarla devam etmek için `python -m tcdd --resume`, bildirimi denemek için `python -m tcdd --test-notify`, ağ olmadan akışı görmek için `python -m tcdd --demo`.
 
 Testler: `python -m unittest discover -s tests -v`
 

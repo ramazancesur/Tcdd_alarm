@@ -89,38 +89,69 @@ object Planner {
 
     // --- Tercih değerlendirme -----------------------------------------------------
 
-    private fun evaluate(chosen: List<Seat>, prefs: Prefs, ctx: Ctx): Pair<List<String>, List<String>> {
-        val n = chosen.size
+    /** Her tercih ayrı bir kuraldır; sıra, bildirim metninin sırasını belirler. */
+    private fun evaluate(
+        chosen: List<Seat>,
+        prefs: Prefs,
+        ctx: Ctx,
+    ): Pair<List<String>, List<String>> {
         val unmet = ArrayList<String>()
         val notes = ArrayList<String>()
-        if (n > 1 && prefs.sideBySide) {
-            val ok = if (n == 2) {
-                val k = blockKey(chosen[0])
-                k != null && k == blockKey(chosen[1])
-            } else {
-                val keys = chosen.map { rowKey(it) }.toSet()
-                keys.size == 1 && !keys.contains(null)
-            }
-            if (!ok) unmet.add("yan yana / aynı sıra")
-        }
-        if (n > 1 && prefs.facing) {
-            if (!ctx.hasGroups) {
-                notes.add("Karşılıklı koltuk bilgisi haritadan çıkarılamadı, bu tercih uygulanamadı.")
-            } else {
-                val groups = chosen.map { it.group }.toSet()
-                val rots = chosen.mapNotNull { it.rot }.toSet()
-                val ok = groups.size == 1 && !groups.contains(null) && (rots.size >= 2 || !ctx.hasRot)
-                if (!ok) unmet.add("karşılıklı")
-            }
-        }
-        if ((prefs.direction == "F" || prefs.direction == "B") && !(n > 1 && prefs.facing)) {
-            if (!ctx.hasDir) {
-                notes.add("Koltuk yönü çözülemedi (ayarlardan 'İleri yön rotation değeri' seçilmemiş), bu tercih uygulanamadı.")
-            } else if (chosen.any { it.direction != prefs.direction }) {
-                unmet.add("koltuk yönü")
-            }
-        }
+        sideBySideIssue(chosen, prefs)?.let(unmet::add)
+        facingIssue(chosen, prefs, ctx, notes)?.let(unmet::add)
+        directionIssue(chosen, prefs, ctx, notes)?.let(unmet::add)
         return Pair(unmet, notes)
+    }
+
+    private fun sideBySideIssue(chosen: List<Seat>, prefs: Prefs): String? {
+        if (chosen.size <= 1 || !prefs.sideBySide || sitsTogether(chosen)) return null
+        return "yan yana / aynı sıra"
+    }
+
+    private fun sitsTogether(chosen: List<Seat>): Boolean {
+        if (chosen.size == 2) {
+            val key = blockKey(chosen[0])
+            return key != null && key == blockKey(chosen[1])
+        }
+        val keys = chosen.map { rowKey(it) }.toSet()
+        return keys.size == 1 && null !in keys
+    }
+
+    private fun facingIssue(
+        chosen: List<Seat>,
+        prefs: Prefs,
+        ctx: Ctx,
+        notes: MutableList<String>,
+    ): String? {
+        if (chosen.size <= 1 || !prefs.facing) return null
+        if (!ctx.hasGroups) {
+            notes.add("Karşılıklı koltuk bilgisi haritadan çıkarılamadı, bu tercih uygulanamadı.")
+            return null
+        }
+        val groups = chosen.map { it.group }.toSet()
+        val rotations = chosen.mapNotNull { it.rot }.toSet()
+        val sameGroup = groups.size == 1 && null !in groups
+        val faces = rotations.size >= 2 || !ctx.hasRot
+        return if (sameGroup && faces) null else "karşılıklı"
+    }
+
+    private fun directionIssue(
+        chosen: List<Seat>,
+        prefs: Prefs,
+        ctx: Ctx,
+        notes: MutableList<String>,
+    ): String? {
+        val wantsDirection = prefs.direction == "F" || prefs.direction == "B"
+        val facingOverrides = chosen.size > 1 && prefs.facing
+        if (!wantsDirection || facingOverrides) return null
+        if (!ctx.hasDir) {
+            notes.add(
+                "Koltuk yönü çözülemedi (ayarlardan 'İleri yön rotation değeri' " +
+                    "seçilmemiş), bu tercih uygulanamadı.",
+            )
+            return null
+        }
+        return if (chosen.any { it.direction != prefs.direction }) "koltuk yönü" else null
     }
 
     // --- Aday üretimi -------------------------------------------------------------

@@ -125,7 +125,7 @@ data class Config(
                 return out
             }
             val kinds = strings("kinds")
-                .mapNotNull { n -> Kind.values().firstOrNull { it.name == n } }
+                .mapNotNull { name -> Kind.entries.firstOrNull { it.name == name } }
                 .toSet()
             return Config(
                 fromId = o.dbl("fromId")?.toInt() ?: 0,

@@ -2,7 +2,6 @@ package app.tcddalarm
 
 import android.Manifest
 import android.app.Activity
-import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.Intent
@@ -10,21 +9,16 @@ import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.text.InputType
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.provider.Settings
-import android.text.Editable
-import android.text.InputType
-import android.text.TextWatcher
 import android.view.View
-import android.view.ViewGroup
 import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ListView
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
@@ -37,12 +31,15 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.TreeSet
 
-/** Tek ekranlı arayüz: güzergah, tarihler, saat aralığı, yolcular, koltuk tercihleri ve takip kontrolleri. */
+/** Tek ekranlı arayüz: güzergah, tarihler, saat aralığı, yolcular ve takip. */
 class MainActivity : Activity() {
 
     companion object {
         private const val REQ_NOTIFICATIONS = 11
     }
+
+    private val widgets by lazy { FormWidgets(this) }
+    private val picker by lazy { StationPicker(this, store, widgets, ::toast) }
 
     private lateinit var store: Store
 
@@ -80,8 +77,6 @@ class MainActivity : Activity() {
     private lateinit var tvStatus: TextView
     private lateinit var tvLog: TextView
 
-    // --- Yaşam döngüsü ---------------------------------------------------------
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = Store(this)
@@ -100,195 +95,180 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
-    // --- Arayüz kurulumu -------------------------------------------------------
-
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
-
     private fun toast(msg: String) {
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
     }
 
-    private fun header(t: String): TextView {
-        val tv = TextView(this)
-        tv.text = t
-        tv.textSize = 17f
-        tv.setTypeface(null, Typeface.BOLD)
-        tv.setPadding(0, dp(20), 0, dp(4))
-        return tv
-    }
-
-    private fun hint(t: String): TextView {
-        val tv = TextView(this)
-        tv.text = t
-        tv.textSize = 12f
-        return tv
-    }
-
-    private fun button(t: String, onClick: () -> Unit): Button {
-        val b = Button(this)
-        b.text = t
-        b.transformationMethod = null
-        b.setOnClickListener { onClick() }
-        return b
-    }
-
-    private fun check(t: String): CheckBox {
-        val c = CheckBox(this)
-        c.text = t
-        return c
-    }
-
-    private fun radio(t: String): RadioButton {
-        val r = RadioButton(this)
-        r.id = View.generateViewId()
-        r.text = t
-        return r
-    }
-
-    private fun spinner(items: List<String>): Spinner {
-        val s = Spinner(this)
-        s.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, items)
-        return s
-    }
-
     private fun buildUi() {
-        val root = LinearLayout(this)
-        root.orientation = LinearLayout.VERTICAL
-        root.setPadding(dp(16), dp(8), dp(16), dp(32))
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(widgets.dp(16), widgets.dp(8), widgets.dp(16), widgets.dp(32))
+        }
+        addRoute(root)
+        addSchedule(root)
+        addPassengers(root)
+        addSeatOptions(root)
+        addAdvanced(root)
+        addControls(root)
+        setContentView(ScrollView(this).apply {
+            isFillViewport = true
+            addView(root)
+        })
+        watchPassengerCount()
+        rebuildGenders(1, emptyList())
+    }
 
-        // Güzergah
-        root.addView(header("Güzergah"))
-        btnFrom = button("Nereden: seçin") { pickStation(true) }
-        btnTo = button("Nereye: seçin") { pickStation(false) }
+    private fun addRoute(root: LinearLayout) {
+        root.addView(widgets.header("Güzergah"))
+        btnFrom = widgets.button("Nereden: seçin") { pickStation(true) }
+        btnTo = widgets.button("Nereye: seçin") { pickStation(false) }
         root.addView(btnFrom)
         root.addView(btnTo)
+    }
 
-        // Tarih ve saat
-        root.addView(header("Tarih ve saat aralığı"))
-        tvDates = TextView(this)
-        tvDates.textSize = 15f
+    private fun addSchedule(root: LinearLayout) {
+        root.addView(widgets.header("Tarih ve saat aralığı"))
+        tvDates = TextView(this).apply { textSize = 15f }
         root.addView(tvDates)
-        val dateRow = LinearLayout(this)
-        dateRow.orientation = LinearLayout.HORIZONTAL
-        dateRow.addView(button("Tarih ekle") { addDate() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        dateRow.addView(button("Tarihleri temizle") { dates.clear(); renderDates() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        root.addView(dateRow)
-        val timeRow = LinearLayout(this)
-        timeRow.orientation = LinearLayout.HORIZONTAL
-        btnTimeFrom = button("") { pickTime(true) }
-        btnTimeTo = button("") { pickTime(false) }
-        timeRow.addView(btnTimeFrom, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        timeRow.addView(btnTimeTo, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val datesRow = widgets.row()
+        datesRow.addView(widgets.button("Tarih ekle") { addDate() }, widgets.half())
+        datesRow.addView(
+            widgets.button("Tarihleri temizle") {
+                dates.clear()
+                renderDates()
+            },
+            widgets.half(),
+        )
+        root.addView(datesRow)
+        val timeRow = widgets.row()
+        btnTimeFrom = widgets.button("") { pickTime(true) }
+        btnTimeTo = widgets.button("") { pickTime(false) }
+        timeRow.addView(btnTimeFrom, widgets.half())
+        timeRow.addView(btnTimeTo, widgets.half())
         root.addView(timeRow)
-        root.addView(hint("Yalnızca bu saat aralığında kalkan seferler izlenir."))
+        root.addView(widgets.hint("Yalnızca bu saat aralığında kalkan seferler izlenir."))
+    }
 
-        // Yolcular
-        root.addView(header("Yolcular"))
-        spCount = spinner(listOf("1 yolcu", "2 yolcu", "3 yolcu", "4 yolcu", "5 yolcu", "6 yolcu"))
+    private fun addPassengers(root: LinearLayout) {
+        root.addView(widgets.header("Yolcular"))
+        spCount = widgets.spinner(
+            listOf("1 yolcu", "2 yolcu", "3 yolcu", "4 yolcu", "5 yolcu", "6 yolcu"),
+        )
         root.addView(spCount)
-        boxGenders = LinearLayout(this)
-        boxGenders.orientation = LinearLayout.VERTICAL
+        boxGenders = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(boxGenders)
-        cbSide = check("Yan yana oturmak istiyoruz")
-        cbFacing = check("Karşılıklı koltuk istiyoruz")
+        cbSide = widgets.check("Yan yana oturmak istiyoruz")
+        cbFacing = widgets.check("Karşılıklı koltuk istiyoruz")
         root.addView(cbSide)
         root.addView(cbFacing)
+    }
 
-        // Koltuk türü
-        root.addView(header("Koltuk türü"))
-        cbEco = check("Ekonomi")
-        cbBiz = check("Business")
-        cbWheel = check("Tekerlekli sandalye")
-        cbEco.isChecked = true
-        cbBiz.isChecked = true
+    private fun addSeatOptions(root: LinearLayout) {
+        root.addView(widgets.header("Koltuk türü"))
+        cbEco = widgets.check("Ekonomi").apply { isChecked = true }
+        cbBiz = widgets.check("Business").apply { isChecked = true }
+        cbWheel = widgets.check("Tekerlekli sandalye")
         root.addView(cbEco)
         root.addView(cbBiz)
         root.addView(cbWheel)
 
-        // Koltuk yönü
-        root.addView(header("Koltuk yönü"))
-        val rg = RadioGroup(this)
-        rg.orientation = RadioGroup.VERTICAL
-        rbAny = radio("Fark etmez")
-        rbFwd = radio("Trenin gidiş yönüne (ileri)")
-        rbBack = radio("Gidiş yönüne ters (geri)")
-        rg.addView(rbAny)
-        rg.addView(rbFwd)
-        rg.addView(rbBack)
+        root.addView(widgets.header("Koltuk yönü"))
+        val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        rbAny = widgets.radio("Fark etmez")
+        rbFwd = widgets.radio("Trenin gidiş yönüne (ileri)")
+        rbBack = widgets.radio("Gidiş yönüne ters (geri)")
+        group.addView(rbAny)
+        group.addView(rbFwd)
+        group.addView(rbBack)
         rbAny.isChecked = true
-        root.addView(rg)
-        cbStrict = check("Yalnızca tüm tercihlere uyan koltuk varsa haber ver")
+        root.addView(group)
+        cbStrict = widgets.check("Yalnızca tüm tercihlere uyan koltuk varsa haber ver")
         root.addView(cbStrict)
-        root.addView(hint("İşaretli değilse en yakın koltuk önerilir ve karşılanamayan tercih bildirimde belirtilir."))
+        root.addView(
+            widgets.hint(
+                "İşaretli değilse en yakın koltuk önerilir ve " +
+                    "karşılanamayan tercih bildirimde belirtilir.",
+            ),
+        )
+    }
 
-        // Takip
-        root.addView(header("Kontrol aralığı"))
-        etInterval = EditText(this)
-        etInterval.inputType = InputType.TYPE_CLASS_NUMBER
-        etInterval.setText("180")
+    private fun addAdvanced(root: LinearLayout) {
+        root.addView(widgets.header("Kontrol aralığı"))
+        etInterval = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText("180")
+        }
         root.addView(etInterval)
-        root.addView(hint("Saniye cinsinden, en az 60. Çok sık sorgulamak sunucu tarafından engellenmenize yol açabilir."))
+        root.addView(
+            widgets.hint(
+                "Saniye cinsinden, en az 60. Çok sık sorgulamak " +
+                    "sunucu tarafından engellenmenize yol açabilir.",
+            ),
+        )
 
-        // Gelişmiş
-        root.addView(header("Gelişmiş"))
-        etToken = EditText(this)
-        etToken.hint = "TCDD Authorization değeri (token)"
-        etToken.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-        etToken.minLines = 2
+        root.addView(widgets.header("Gelişmiş"))
+        etToken = EditText(this).apply {
+            hint = "TCDD Authorization değeri (token)"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+        }
         root.addView(etToken)
-        root.addView(hint("e-bilet sitesinde (bilgisayar tarayıcısı) F12 → Network → bir isteğin 'Authorization' başlığı. Süresi dolunca yenileyin."))
-        etBase = EditText(this)
-        etBase.setText(TcddApi.DEFAULT_BASE)
-        etBase.setSingleLine(true)
+        root.addView(
+            widgets.hint(
+                "e-bilet sitesinde (bilgisayar tarayıcısı) F12 → Network → " +
+                    "bir isteğin 'Authorization' başlığı. Süresi dolunca yenileyin.",
+            ),
+        )
+        etBase = EditText(this).apply {
+            setText(TcddApi.DEFAULT_BASE)
+            setSingleLine(true)
+        }
         root.addView(etBase)
-        root.addView(hint("Sunucu adresi (genelde değiştirmeyin)."))
-        spRot = spinner(listOf("İleri yön rotation değeri: ayarlanmadı", "İleri yön = rotation 0", "İleri yön = rotation 180"))
+        root.addView(widgets.hint("Sunucu adresi (genelde değiştirmeyin)."))
+        spRot = widgets.spinner(
+            listOf(
+                "İleri yön rotation değeri: ayarlanmadı",
+                "İleri yön = rotation 0",
+                "İleri yön = rotation 180",
+            ),
+        )
         root.addView(spRot)
-        root.addView(hint("Koltuk yönü tercihi için gerekli. Günlükte/dökümde trenin gidiş yönüne bakan koltuğun rotation değerini görüp seçin."))
-        root.addView(button("İstasyon listesini yenile") {
+        root.addView(
+            widgets.hint(
+                "Koltuk yönü tercihi için gerekli. Günlükte/dökümde trenin " +
+                    "gidiş yönüne bakan koltuğun rotation değerini görüp seçin.",
+            ),
+        )
+        root.addView(widgets.button("İstasyon listesini yenile") {
             store.clearStations()
             toast("İstasyon listesi bir sonraki seçimde yeniden indirilecek.")
         })
-        root.addView(button("Pil kısıtlamasını kaldır (arka planda çalışması için)") {
-            try {
-                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-            } catch (e: Exception) {
-                toast("Ayarlar açılamadı: ${e.message}")
-            }
+        root.addView(widgets.button("Pil kısıtlamasını kaldır (arka planda çalışması için)") {
+            openBatterySettings()
         })
-        root.addView(button("Bildirimi dene") {
-            withNotificationPermission {
-                Notifier.ensureChannels(this)
-                Notifier.alert(this, 99, "Deneme bildirimi", "Bildirimler çalışıyor ✅")
-            }
-        })
+        root.addView(widgets.button("Bildirimi dene") { sendTestNotification() })
+    }
 
-        // Başlat / Durdur
-        root.addView(header("Takip"))
-        tvStatus = TextView(this)
-        tvStatus.textSize = 15f
+    private fun addControls(root: LinearLayout) {
+        root.addView(widgets.header("Takip"))
+        tvStatus = TextView(this).apply { textSize = 15f }
         root.addView(tvStatus)
-        val row = LinearLayout(this)
-        row.orientation = LinearLayout.HORIZONTAL
-        btnStart = button("Takibi başlat") { startClicked() }
-        btnStop = button("Durdur") { stopClicked() }
-        row.addView(btnStart, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(btnStop, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val row = widgets.row()
+        btnStart = widgets.button("Takibi başlat") { startClicked() }
+        btnStop = widgets.button("Durdur") { stopClicked() }
+        row.addView(btnStart, widgets.half())
+        row.addView(btnStop, widgets.half())
         root.addView(row)
-        tvLog = TextView(this)
-        tvLog.typeface = Typeface.MONOSPACE
-        tvLog.textSize = 12f
-        tvLog.setTextIsSelectable(true)
-        tvLog.setPadding(0, dp(8), 0, 0)
+        tvLog = TextView(this).apply {
+            typeface = Typeface.MONOSPACE
+            textSize = 12f
+            setTextIsSelectable(true)
+            setPadding(0, widgets.dp(8), 0, 0)
+        }
         root.addView(tvLog)
+    }
 
-        val scroll = ScrollView(this)
-        scroll.isFillViewport = true
-        scroll.addView(root)
-        setContentView(scroll)
-
-        // Programatik setSelection da onItemSelected tetikler ve kayıtlı cinsiyetleri siler.
-        // Yalnızca kullanıcının dokunuşu veya tuşu yeni satır açsın.
+    private fun watchPassengerCount() {
         spCount.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_DOWN) countTouched = true
             false
@@ -298,7 +278,12 @@ class MainActivity : Activity() {
             false
         }
         spCount.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+            override fun onItemSelected(
+                parent: AdapterView<*>?,
+                view: View?,
+                position: Int,
+                id: Long,
+            ) {
                 if (!countTouched) return
                 countTouched = false
                 rebuildGenders(position + 1, emptyList())
@@ -306,153 +291,79 @@ class MainActivity : Activity() {
 
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
-        rebuildGenders(1, emptyList())
     }
 
-    // --- Yolcular --------------------------------------------------------------
+    private fun openBatterySettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        } catch (error: Exception) {
+            toast("Ayarlar açılamadı: ${error.message}")
+        }
+    }
+
+    private fun sendTestNotification() {
+        withNotificationPermission {
+            Notifier.ensureChannels(this)
+            Notifier.alert(this, 99, "Deneme bildirimi", "Bildirimler çalışıyor ✅")
+        }
+    }
 
     private fun currentGenders(): List<String> =
         genderSpinners.map { if (it.selectedItemPosition == 1) "E" else "K" }
 
-    private fun rebuildGenders(n: Int, keep: List<String>) {
-        val prev = if (keep.isNotEmpty()) keep else currentGenders()
+    private fun rebuildGenders(count: Int, keep: List<String>) {
+        val previous = keep.ifEmpty { currentGenders() }
         boxGenders.removeAllViews()
         genderSpinners.clear()
-        for (i in 0 until n) {
-            val label = TextView(this)
-            label.text = "${i + 1}. yolcunun cinsiyeti"
-            label.setPadding(0, dp(6), 0, 0)
-            val sp = spinner(listOf("Kadın", "Erkek"))
-            sp.setSelection(if (prev.getOrNull(i) == "E") 1 else 0)
+        for (index in 0 until count) {
+            val label = TextView(this).apply {
+                text = "${index + 1}. yolcunun cinsiyeti"
+                setPadding(0, widgets.dp(6), 0, 0)
+            }
+            val spinner = widgets.spinner(listOf("Kadın", "Erkek"))
+            spinner.setSelection(if (previous.getOrNull(index) == "E") 1 else 0)
             boxGenders.addView(label)
-            boxGenders.addView(sp)
-            genderSpinners.add(sp)
+            boxGenders.addView(spinner)
+            genderSpinners.add(spinner)
         }
-        cbSide.text = if (n > 2) "Aynı sırada oturmak istiyoruz" else "Yan yana oturmak istiyoruz"
-        cbSide.isEnabled = n > 1
-        cbFacing.isEnabled = n > 1
-        if (n == 1) {
+        cbSide.text = if (count > 2) {
+            "Aynı sırada oturmak istiyoruz"
+        } else {
+            "Yan yana oturmak istiyoruz"
+        }
+        cbSide.isEnabled = count > 1
+        cbFacing.isEnabled = count > 1
+        if (count == 1) {
             cbSide.isChecked = false
             cbFacing.isChecked = false
         }
     }
-
-    // --- İstasyon seçimi -------------------------------------------------------
 
     private fun renderStations() {
         btnFrom.text = "Nereden: ${from?.name ?: "seçin"}"
         btnTo.text = "Nereye: ${to?.name ?: "seçin"}"
     }
 
-    private fun loadStations(token: String, base: String): List<Station> {
-        val cached = store.cachedStations()
-        if (cached != null) return cached
-        val raw = TcddApi(base, TcddApi.DEFAULT_CDN, token).fetchStationsRaw()
-        val list = TcddApi.parseStations(parseJson(raw))
-        if (list.isEmpty()) throw IllegalStateException("Liste boş ya da biçimi tanınmadı")
-        store.cacheStationsRaw(raw)
-        return list
-    }
-
     private fun pickStation(isFrom: Boolean) {
-        if (!isFrom && from == null) {
-            toast("Önce kalkış istasyonunu seçin")
-            return
+        picker.show(
+            choosingOrigin = isFrom,
+            origin = { from },
+            destination = { to },
+            token = etToken.text.toString().trim(),
+            base = etBase.text.toString().trim().ifEmpty { TcddApi.DEFAULT_BASE },
+        ) { nextFrom, nextTo ->
+            from = nextFrom
+            to = nextTo
+            renderStations()
         }
-        val token = etToken.text.toString().trim()
-        val base = etBase.text.toString().trim().ifEmpty { TcddApi.DEFAULT_BASE }
-
-        val box = LinearLayout(this)
-        box.orientation = LinearLayout.VERTICAL
-        box.setPadding(dp(16), dp(8), dp(16), 0)
-        val search = EditText(this)
-        search.hint = "İstasyon adı yazın"
-        search.setSingleLine(true)
-        val status = TextView(this)
-        status.text = "İstasyonlar yükleniyor…"
-        val list = ListView(this)
-        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList<String>())
-        list.adapter = adapter
-        box.addView(search)
-        box.addView(status)
-        box.addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(320)))
-
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(if (isFrom) "Nereden" else "Nereye")
-            .setView(box)
-            .setNegativeButton("Kapat", null)
-            .create()
-        dialog.show()
-
-        var all: List<Station> = emptyList()
-        var shown: List<Station> = emptyList()
-
-        fun refilter() {
-            val q = trNorm(search.text.toString().trim())
-            var base2 = all
-            val f = from
-            if (!isFrom && f != null && f.pairs.isNotEmpty()) {
-                base2 = base2.filter { it.id in f.pairs }
-            }
-            shown = base2.filter { q.isEmpty() || trNorm(it.name).contains(q) }.take(80)
-            adapter.clear()
-            adapter.addAll(shown.map { it.name })
-            adapter.notifyDataSetChanged()
-            status.text = "${shown.size} istasyon"
-        }
-
-        search.addTextChangedListener(object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) {
-                refilter()
-            }
-
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-        })
-
-        list.setOnItemClickListener { _, _, position, _ ->
-            val st = shown.getOrNull(position)
-            if (st != null) {
-                if (isFrom) {
-                    from = st
-                    val t = to
-                    if (t != null && (t.id == st.id || (st.pairs.isNotEmpty() && t.id !in st.pairs))) to = null
-                } else {
-                    to = st
-                }
-                renderStations()
-                dialog.dismiss()
-            }
-        }
-
-        Thread {
-            try {
-                val loaded = loadStations(token, base)
-                runOnUiThread {
-                    all = loaded
-                    // Kayıttan geri yüklenen kalkış istasyonunun "pairs" bilgisini tamamla
-                    val f = from
-                    if (f != null && f.pairs.isEmpty()) {
-                        from = loaded.firstOrNull { it.id == f.id } ?: f
-                    }
-                    refilter()
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    status.text = "İstasyon listesi alınamadı: ${e.message}\nGelişmiş bölümüne token girip tekrar deneyin."
-                }
-            }
-        }.start()
     }
-
-    // --- Tarih / saat ----------------------------------------------------------
 
     private fun renderDates() {
-        val fmt = DateTimeFormatter.ofPattern("dd.MM.yyyy, EEEE", Locale.forLanguageTag("tr-TR"))
+        val format = DateTimeFormatter.ofPattern("dd.MM.yyyy, EEEE", Locale.forLanguageTag("tr-TR"))
         tvDates.text = if (dates.isEmpty()) {
             "Henüz tarih seçilmedi"
         } else {
-            dates.joinToString("\n") { LocalDate.parse(it).format(fmt) }
+            dates.joinToString("\n") { LocalDate.parse(it).format(format) }
         }
     }
 
@@ -462,96 +373,87 @@ class MainActivity : Activity() {
     }
 
     private fun addDate() {
-        val c = Calendar.getInstance()
-        val dlg = DatePickerDialog(
+        val calendar = Calendar.getInstance()
+        val dialog = DatePickerDialog(
             this,
-            { _, y, m, d ->
-                dates.add(String.format(Locale.ROOT, "%04d-%02d-%02d", y, m + 1, d))
+            { _, year, month, day ->
+                dates.add(String.format(Locale.ROOT, "%04d-%02d-%02d", year, month + 1, day))
                 renderDates()
             },
-            c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)
+            calendar.get(Calendar.YEAR),
+            calendar.get(Calendar.MONTH),
+            calendar.get(Calendar.DAY_OF_MONTH),
         )
-        dlg.datePicker.minDate = System.currentTimeMillis() - 1000L
-        dlg.show()
+        dialog.datePicker.minDate = System.currentTimeMillis() - 1000L
+        dialog.show()
     }
 
     private fun pickTime(isFrom: Boolean) {
         val parts = (if (isFrom) timeFrom else timeTo).split(":")
         TimePickerDialog(
             this,
-            { _, h, m ->
-                val s = String.format(Locale.ROOT, "%02d:%02d", h, m)
-                if (isFrom) timeFrom = s else timeTo = s
+            { _, hour, minute ->
+                val text = String.format(Locale.ROOT, "%02d:%02d", hour, minute)
+                if (isFrom) timeFrom = text else timeTo = text
                 renderTimes()
             },
-            parts[0].toInt(), parts[1].toInt(), true
+            parts[0].toInt(),
+            parts[1].toInt(),
+            true,
         ).show()
     }
 
-    // --- Kayıttan geri yükleme -------------------------------------------------
-
     private fun restore() {
         etToken.setText(store.token)
-        val c = store.config
-        if (c == null) {
+        val saved = store.config
+        if (saved == null) {
             renderStations()
             renderDates()
             renderTimes()
             return
         }
         val cached = store.cachedStations()
-        from = cached?.firstOrNull { it.id == c.fromId } ?: Station(c.fromId, c.fromName, emptyList())
-        to = cached?.firstOrNull { it.id == c.toId } ?: Station(c.toId, c.toName, emptyList())
+        from = cached?.firstOrNull { it.id == saved.fromId }
+            ?: Station(saved.fromId, saved.fromName, emptyList())
+        to = cached?.firstOrNull { it.id == saved.toId }
+            ?: Station(saved.toId, saved.toName, emptyList())
         dates.clear()
-        dates.addAll(c.dates)
-        timeFrom = c.timeFrom
-        timeTo = c.timeTo
-        spCount.setSelection((c.genders.size - 1).coerceIn(0, 5))
-        rebuildGenders(c.genders.size, c.genders)
-        cbSide.isChecked = c.sideBySide && c.genders.size > 1
-        cbFacing.isChecked = c.facing && c.genders.size > 1
-        cbEco.isChecked = Kind.ECONOMY in c.kinds
-        cbBiz.isChecked = Kind.BUSINESS in c.kinds
-        cbWheel.isChecked = Kind.WHEELCHAIR in c.kinds
-        when (c.direction) {
+        dates.addAll(saved.dates)
+        timeFrom = saved.timeFrom
+        timeTo = saved.timeTo
+        spCount.setSelection((saved.genders.size - 1).coerceIn(0, 5))
+        rebuildGenders(saved.genders.size, saved.genders)
+        cbSide.isChecked = saved.sideBySide && saved.genders.size > 1
+        cbFacing.isChecked = saved.facing && saved.genders.size > 1
+        cbEco.isChecked = Kind.ECONOMY in saved.kinds
+        cbBiz.isChecked = Kind.BUSINESS in saved.kinds
+        cbWheel.isChecked = Kind.WHEELCHAIR in saved.kinds
+        when (saved.direction) {
             "F" -> rbFwd.isChecked = true
             "B" -> rbBack.isChecked = true
             else -> rbAny.isChecked = true
         }
-        cbStrict.isChecked = c.strict
-        etInterval.setText(c.intervalSec.toString())
-        etBase.setText(c.baseUrl)
+        cbStrict.isChecked = saved.strict
+        etInterval.setText(saved.intervalSec.toString())
+        etBase.setText(saved.baseUrl)
         spRot.setSelection(
-            when (c.forwardRotation) {
+            when (saved.forwardRotation) {
                 0 -> 1
                 180 -> 2
                 else -> 0
-            }
+            },
         )
         renderStations()
         renderDates()
         renderTimes()
     }
 
-    // --- Ayarlardan yapılandırma ----------------------------------------------
-
     private fun buildConfig(): Config? {
-        val f = from
-        val t = to
-        if (f == null || t == null) {
-            toast("Önce nereden ve nereye istasyonlarını seçin")
-            return null
-        }
-        if (f.id == t.id) {
-            toast("Kalkış ve varış istasyonu aynı olamaz")
-            return null
-        }
-        if (dates.isEmpty()) {
-            toast("En az bir tarih ekleyin")
-            return null
-        }
-        if (timeFrom > timeTo) {
-            toast("Başlangıç saati bitişten sonra olamaz")
+        val origin = from
+        val destination = to
+        val error = configError(origin, destination)
+        if (error != null) {
+            toast(error)
             return null
         }
         val interval = etInterval.text.toString().trim().toIntOrNull()
@@ -559,51 +461,66 @@ class MainActivity : Activity() {
             toast("Kontrol aralığı 60 ile 86400 saniye arasında olmalı")
             return null
         }
-        val kinds = LinkedHashSet<Kind>()
-        if (cbEco.isChecked) kinds.add(Kind.ECONOMY)
-        if (cbBiz.isChecked) kinds.add(Kind.BUSINESS)
-        if (cbWheel.isChecked) kinds.add(Kind.WHEELCHAIR)
+        val kinds = selectedKinds()
         if (kinds.isEmpty()) {
             toast("En az bir koltuk türü seçin")
             return null
         }
-        val direction = when {
-            rbFwd.isChecked -> "F"
-            rbBack.isChecked -> "B"
-            else -> "A"
-        }
-        val rot: Int? = when (spRot.selectedItemPosition) {
-            1 -> 0
-            2 -> 180
-            else -> null
-        }
-        val n = genderSpinners.size
         return Config(
-            fromId = f.id,
-            fromName = f.name,
-            toId = t.id,
-            toName = t.name,
+            fromId = origin!!.id,
+            fromName = origin.name,
+            toId = destination!!.id,
+            toName = destination.name,
             dates = dates.toList(),
             timeFrom = timeFrom,
             timeTo = timeTo,
             genders = currentGenders(),
             kinds = kinds,
-            sideBySide = n > 1 && cbSide.isChecked,
-            facing = n > 1 && cbFacing.isChecked,
-            direction = direction,
+            sideBySide = genderSpinners.size > 1 && cbSide.isChecked,
+            facing = genderSpinners.size > 1 && cbFacing.isChecked,
+            direction = selectedDirection(),
             strict = cbStrict.isChecked,
             intervalSec = interval,
-            forwardRotation = rot,
-            baseUrl = etBase.text.toString().trim().ifEmpty { TcddApi.DEFAULT_BASE }
+            forwardRotation = selectedRotation(),
+            baseUrl = etBase.text.toString().trim().ifEmpty { TcddApi.DEFAULT_BASE },
         )
     }
 
-    // --- Başlat / durdur -------------------------------------------------------
+    private fun configError(origin: Station?, destination: Station?): String? {
+        if (origin == null || destination == null) {
+            return "Önce nereden ve nereye istasyonlarını seçin"
+        }
+        if (origin.id == destination.id) return "Kalkış ve varış istasyonu aynı olamaz"
+        if (dates.isEmpty()) return "En az bir tarih ekleyin"
+        if (timeFrom > timeTo) return "Başlangıç saati bitişten sonra olamaz"
+        return null
+    }
+
+    private fun selectedKinds(): LinkedHashSet<Kind> {
+        val kinds = LinkedHashSet<Kind>()
+        if (cbEco.isChecked) kinds.add(Kind.ECONOMY)
+        if (cbBiz.isChecked) kinds.add(Kind.BUSINESS)
+        if (cbWheel.isChecked) kinds.add(Kind.WHEELCHAIR)
+        return kinds
+    }
+
+    private fun selectedDirection(): String = when {
+        rbFwd.isChecked -> "F"
+        rbBack.isChecked -> "B"
+        else -> "A"
+    }
+
+    private fun selectedRotation(): Int? = when (spRot.selectedItemPosition) {
+        1 -> 0
+        2 -> 180
+        else -> null
+    }
 
     private fun withNotificationPermission(action: () -> Unit) {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
+        val needsPermission = Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        if (needsPermission) {
             pendingAction = action
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
         } else {
@@ -611,30 +528,40 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQ_NOTIFICATIONS) {
-            val action = pendingAction
-            pendingAction = null
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                action?.invoke()
-            } else {
-                toast("Bildirim izni verilmedi; uyarı alamazsınız. Telefon ayarlarından izin verin.")
-            }
+        if (requestCode != REQ_NOTIFICATIONS) return
+        val action = pendingAction
+        pendingAction = null
+        val granted = grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            action?.invoke()
+        } else {
+            toast("Bildirim izni verilmedi; uyarı alamazsınız. Telefon ayarlarından izin verin.")
         }
     }
 
     private fun startClicked() {
-        val cfg = buildConfig() ?: return
+        val config = buildConfig() ?: return
         withNotificationPermission {
-            store.config = cfg
+            store.config = config
             store.token = etToken.text.toString().trim()
             store.clearState()
             if (store.token.isEmpty()) {
-                Bus.log("Uyarı: token girilmedi. Sunucu isteği reddederse Gelişmiş bölümünden token ekleyin.")
+                Bus.log(
+                    "Uyarı: token girilmedi. Sunucu isteği reddederse " +
+                        "Gelişmiş bölümünden token ekleyin.",
+                )
             }
             Notifier.ensureChannels(this)
-            startForegroundService(Intent(this, MonitorService::class.java).setAction(MonitorService.ACTION_START))
+            val intent = Intent(this, MonitorService::class.java)
+                .setAction(MonitorService.ACTION_START)
+            startForegroundService(intent)
             toast("Takip başlatıldı")
         }
     }
@@ -651,6 +578,10 @@ class MainActivity : Activity() {
         btnStop.isEnabled = running
         tvStatus.text = if (running) "● Takip çalışıyor" else "○ Takip kapalı"
         val lines = Bus.snapshot()
-        tvLog.text = if (lines.isEmpty()) "Henüz kayıt yok." else lines.takeLast(80).reversed().joinToString("\n")
+        tvLog.text = if (lines.isEmpty()) {
+            "Henüz kayıt yok."
+        } else {
+            lines.takeLast(80).reversed().joinToString("\n")
+        }
     }
 }

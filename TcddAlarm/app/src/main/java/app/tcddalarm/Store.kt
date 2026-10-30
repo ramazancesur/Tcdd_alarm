@@ -56,7 +56,8 @@ class Store(context: Context) {
     fun cachedStations(): List<Station>? {
         if (!stationFile.exists()) return null
         return try {
-            val list = TcddApi.parseStations(parseJson(stationFile.readText(Charsets.UTF_8)))
+            val raw = stationFile.readText(Charsets.UTF_8)
+            val list = Responses.parseStations(parseJson(raw))
             if (list.isEmpty()) null else list
         } catch (e: Exception) {
             null
