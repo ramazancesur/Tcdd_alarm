@@ -9,10 +9,32 @@ import org.junit.Test
 class PlannerTest {
 
     private fun seat(
-        no: Int, row: Int, pos: Int, free: Boolean = true, gender: String? = null,
-        wagon: String = "1", kind: Kind = Kind.ECONOMY, rot: Int? = null, group: String? = null,
-        dir: String? = null, blk: String? = null, restrict: String? = null
-    ) = Seat(wagon, no.toString(), row, pos, free, gender, dir, group, kind, rot, blk, restrict)
+        number: Int,
+        row: Int,
+        position: Int,
+        free: Boolean = true,
+        gender: String? = null,
+        wagon: String = "1",
+        kind: Kind = Kind.ECONOMY,
+        rotation: Int? = null,
+        group: String? = null,
+        direction: String? = null,
+        block: String? = null,
+        restrict: String? = null,
+    ) = Seat(
+        wagon,
+        number.toString(),
+        row,
+        position,
+        free,
+        gender,
+        direction,
+        group,
+        kind,
+        rotation,
+        block,
+        restrict,
+    )
 
     private fun prefs(
         vararg g: String,
@@ -55,7 +77,7 @@ class PlannerTest {
 
     @Test
     fun strictVsSoftDirection() {
-        val seats = listOf(seat(1, 0, 0, rot = 180, dir = "B"), seat(2, 0, 1, rot = 180, dir = "B"))
+        val seats = listOf(seat(1, 0, 0, rotation = 180, direction = "B"), seat(2, 0, 1, rotation = 180, direction = "B"))
         val strict = Prefs(listOf("K"), setOf(Kind.ECONOMY), direction = "F", strict = true)
         assertNull(Planner.makePlan(seats, strict))
         val soft = Planner.makePlan(seats, strict.copy(strict = false))!!
@@ -65,12 +87,12 @@ class PlannerTest {
     @Test
     fun facingPairHasSameGroupAndOppositeRotation() {
         val seats = listOf(
-            seat(1, 0, 0, rot = 0, group = "g1"), seat(5, 1, 0, rot = 180, group = "g1"),
-            seat(2, 0, 1, rot = 0, group = "g1"), seat(6, 1, 1, rot = 180, group = "g1")
+            seat(1, 0, 0, rotation = 0, group = "g1"), seat(5, 1, 0, rotation = 180, group = "g1"),
+            seat(2, 0, 1, rotation = 0, group = "g1"), seat(6, 1, 1, rotation = 180, group = "g1")
         )
         val p = Planner.makePlan(seats, prefs("E", "E", facing = true))!!
         assertTrue(p.unmet.isEmpty())
-        assertEquals(2, p.seats.map { it.rot }.toSet().size)
+        assertEquals(2, p.seats.map { it.rotation }.toSet().size)
     }
 
     @Test

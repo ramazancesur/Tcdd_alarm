@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
+import android.net.Uri
 import android.provider.Settings
 import android.text.InputType
 import android.view.KeyEvent
@@ -43,39 +44,39 @@ class MainActivity : Activity() {
 
     private lateinit var store: Store
 
-    private var from: Station? = null
-    private var to: Station? = null
+    private var originStation: Station? = null
+    private var destinationStation: Station? = null
     private val dates = TreeSet<String>()
     private var timeFrom = "00:00"
     private var timeTo = "23:59"
     private val genderSpinners = ArrayList<Spinner>()
     private var pendingAction: (() -> Unit)? = null
-    private var countTouched = false
+    private var passengerCountTouched = false
 
-    private lateinit var btnFrom: Button
-    private lateinit var btnTo: Button
-    private lateinit var tvDates: TextView
-    private lateinit var btnTimeFrom: Button
-    private lateinit var btnTimeTo: Button
-    private lateinit var spCount: Spinner
-    private lateinit var boxGenders: LinearLayout
-    private lateinit var cbSide: CheckBox
-    private lateinit var cbFacing: CheckBox
-    private lateinit var cbEco: CheckBox
-    private lateinit var cbBiz: CheckBox
-    private lateinit var cbWheel: CheckBox
-    private lateinit var rbAny: RadioButton
-    private lateinit var rbFwd: RadioButton
-    private lateinit var rbBack: RadioButton
-    private lateinit var cbStrict: CheckBox
-    private lateinit var etInterval: EditText
-    private lateinit var etToken: EditText
-    private lateinit var etBase: EditText
-    private lateinit var spRot: Spinner
-    private lateinit var btnStart: Button
-    private lateinit var btnStop: Button
-    private lateinit var tvStatus: TextView
-    private lateinit var tvLog: TextView
+    private lateinit var originButton: Button
+    private lateinit var destinationButton: Button
+    private lateinit var datesText: TextView
+    private lateinit var timeFromButton: Button
+    private lateinit var timeToButton: Button
+    private lateinit var passengerCountSpinner: Spinner
+    private lateinit var genderLayout: LinearLayout
+    private lateinit var sideBySideCheck: CheckBox
+    private lateinit var facingCheck: CheckBox
+    private lateinit var economyCheck: CheckBox
+    private lateinit var businessCheck: CheckBox
+    private lateinit var wheelchairCheck: CheckBox
+    private lateinit var anyDirectionRadio: RadioButton
+    private lateinit var forwardRadio: RadioButton
+    private lateinit var backwardRadio: RadioButton
+    private lateinit var strictCheck: CheckBox
+    private lateinit var intervalInput: EditText
+    private lateinit var tokenInput: EditText
+    private lateinit var baseUrlInput: EditText
+    private lateinit var rotationSpinner: Spinner
+    private lateinit var startButton: Button
+    private lateinit var stopButton: Button
+    private lateinit var statusText: TextView
+    private lateinit var logText: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,12 +87,12 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        Bus.listener = { runOnUiThread { refreshStatus() } }
+        WatchStatus.listener = { runOnUiThread { refreshStatus() } }
         refreshStatus()
     }
 
     override fun onPause() {
-        Bus.listener = null
+        WatchStatus.listener = null
         super.onPause()
     }
 
@@ -120,16 +121,16 @@ class MainActivity : Activity() {
 
     private fun addRoute(root: LinearLayout) {
         root.addView(widgets.header("Güzergah"))
-        btnFrom = widgets.button("Nereden: seçin") { pickStation(true) }
-        btnTo = widgets.button("Nereye: seçin") { pickStation(false) }
-        root.addView(btnFrom)
-        root.addView(btnTo)
+        originButton = widgets.button("Nereden: seçin") { pickStation(choosingOrigin = true) }
+        destinationButton = widgets.button("Nereye: seçin") { pickStation(choosingOrigin = false) }
+        root.addView(originButton)
+        root.addView(destinationButton)
     }
 
     private fun addSchedule(root: LinearLayout) {
         root.addView(widgets.header("Tarih ve saat aralığı"))
-        tvDates = TextView(this).apply { textSize = 15f }
-        root.addView(tvDates)
+        datesText = TextView(this).apply { textSize = 15f }
+        root.addView(datesText)
         val datesRow = widgets.row()
         datesRow.addView(widgets.button("Tarih ekle") { addDate() }, widgets.half())
         datesRow.addView(
@@ -141,49 +142,49 @@ class MainActivity : Activity() {
         )
         root.addView(datesRow)
         val timeRow = widgets.row()
-        btnTimeFrom = widgets.button("") { pickTime(true) }
-        btnTimeTo = widgets.button("") { pickTime(false) }
-        timeRow.addView(btnTimeFrom, widgets.half())
-        timeRow.addView(btnTimeTo, widgets.half())
+        timeFromButton = widgets.button("") { pickTime(choosingStart = true) }
+        timeToButton = widgets.button("") { pickTime(choosingStart = false) }
+        timeRow.addView(timeFromButton, widgets.half())
+        timeRow.addView(timeToButton, widgets.half())
         root.addView(timeRow)
         root.addView(widgets.hint("Yalnızca bu saat aralığında kalkan seferler izlenir."))
     }
 
     private fun addPassengers(root: LinearLayout) {
         root.addView(widgets.header("Yolcular"))
-        spCount = widgets.spinner(
+        passengerCountSpinner = widgets.spinner(
             listOf("1 yolcu", "2 yolcu", "3 yolcu", "4 yolcu", "5 yolcu", "6 yolcu"),
         )
-        root.addView(spCount)
-        boxGenders = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(boxGenders)
-        cbSide = widgets.check("Yan yana oturmak istiyoruz")
-        cbFacing = widgets.check("Karşılıklı koltuk istiyoruz")
-        root.addView(cbSide)
-        root.addView(cbFacing)
+        root.addView(passengerCountSpinner)
+        genderLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(genderLayout)
+        sideBySideCheck = widgets.check("Yan yana oturmak istiyoruz")
+        facingCheck = widgets.check("Karşılıklı koltuk istiyoruz")
+        root.addView(sideBySideCheck)
+        root.addView(facingCheck)
     }
 
     private fun addSeatOptions(root: LinearLayout) {
         root.addView(widgets.header("Koltuk türü"))
-        cbEco = widgets.check("Ekonomi").apply { isChecked = true }
-        cbBiz = widgets.check("Business").apply { isChecked = true }
-        cbWheel = widgets.check("Tekerlekli sandalye")
-        root.addView(cbEco)
-        root.addView(cbBiz)
-        root.addView(cbWheel)
+        economyCheck = widgets.check("Ekonomi").apply { isChecked = true }
+        businessCheck = widgets.check("Business").apply { isChecked = true }
+        wheelchairCheck = widgets.check("Tekerlekli sandalye")
+        root.addView(economyCheck)
+        root.addView(businessCheck)
+        root.addView(wheelchairCheck)
 
         root.addView(widgets.header("Koltuk yönü"))
         val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        rbAny = widgets.radio("Fark etmez")
-        rbFwd = widgets.radio("Trenin gidiş yönüne (ileri)")
-        rbBack = widgets.radio("Gidiş yönüne ters (geri)")
-        group.addView(rbAny)
-        group.addView(rbFwd)
-        group.addView(rbBack)
-        rbAny.isChecked = true
+        anyDirectionRadio = widgets.radio("Fark etmez")
+        forwardRadio = widgets.radio("Trenin gidiş yönüne (ileri)")
+        backwardRadio = widgets.radio("Gidiş yönüne ters (geri)")
+        group.addView(anyDirectionRadio)
+        group.addView(forwardRadio)
+        group.addView(backwardRadio)
+        anyDirectionRadio.isChecked = true
         root.addView(group)
-        cbStrict = widgets.check("Yalnızca tüm tercihlere uyan koltuk varsa haber ver")
-        root.addView(cbStrict)
+        strictCheck = widgets.check("Yalnızca tüm tercihlere uyan koltuk varsa haber ver")
+        root.addView(strictCheck)
         root.addView(
             widgets.hint(
                 "İşaretli değilse en yakın koltuk önerilir ve " +
@@ -194,11 +195,11 @@ class MainActivity : Activity() {
 
     private fun addAdvanced(root: LinearLayout) {
         root.addView(widgets.header("Kontrol aralığı"))
-        etInterval = EditText(this).apply {
+        intervalInput = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             setText("180")
         }
-        root.addView(etInterval)
+        root.addView(intervalInput)
         root.addView(
             widgets.hint(
                 "Saniye cinsinden, en az 60. Çok sık sorgulamak " +
@@ -207,32 +208,32 @@ class MainActivity : Activity() {
         )
 
         root.addView(widgets.header("Gelişmiş"))
-        etToken = EditText(this).apply {
+        tokenInput = EditText(this).apply {
             hint = "TCDD Authorization değeri (token)"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             minLines = 2
         }
-        root.addView(etToken)
+        root.addView(tokenInput)
         root.addView(
             widgets.hint(
                 "e-bilet sitesinde (bilgisayar tarayıcısı) F12 → Network → " +
                     "bir isteğin 'Authorization' başlığı. Süresi dolunca yenileyin.",
             ),
         )
-        etBase = EditText(this).apply {
+        baseUrlInput = EditText(this).apply {
             setText(TcddApi.DEFAULT_BASE)
             setSingleLine(true)
         }
-        root.addView(etBase)
+        root.addView(baseUrlInput)
         root.addView(widgets.hint("Sunucu adresi (genelde değiştirmeyin)."))
-        spRot = widgets.spinner(
+        rotationSpinner = widgets.spinner(
             listOf(
                 "İleri yön rotation değeri: ayarlanmadı",
                 "İleri yön = rotation 0",
                 "İleri yön = rotation 180",
             ),
         )
-        root.addView(spRot)
+        root.addView(rotationSpinner)
         root.addView(
             widgets.hint(
                 "Koltuk yönü tercihi için gerekli. Günlükte/dökümde trenin " +
@@ -251,41 +252,41 @@ class MainActivity : Activity() {
 
     private fun addControls(root: LinearLayout) {
         root.addView(widgets.header("Takip"))
-        tvStatus = TextView(this).apply { textSize = 15f }
-        root.addView(tvStatus)
+        statusText = TextView(this).apply { textSize = 15f }
+        root.addView(statusText)
         val row = widgets.row()
-        btnStart = widgets.button("Takibi başlat") { startClicked() }
-        btnStop = widgets.button("Durdur") { stopClicked() }
-        row.addView(btnStart, widgets.half())
-        row.addView(btnStop, widgets.half())
+        startButton = widgets.button("Takibi başlat") { startClicked() }
+        stopButton = widgets.button("Durdur") { stopClicked() }
+        row.addView(startButton, widgets.half())
+        row.addView(stopButton, widgets.half())
         root.addView(row)
-        tvLog = TextView(this).apply {
+        logText = TextView(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 12f
             setTextIsSelectable(true)
             setPadding(0, widgets.dp(8), 0, 0)
         }
-        root.addView(tvLog)
+        root.addView(logText)
     }
 
     private fun watchPassengerCount() {
-        spCount.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_DOWN) countTouched = true
+        passengerCountSpinner.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN) passengerCountTouched = true
             false
         }
-        spCount.setOnKeyListener { _, _, event ->
-            if (event.action == KeyEvent.ACTION_DOWN) countTouched = true
+        passengerCountSpinner.setOnKeyListener { _, _, event ->
+            if (event.action == KeyEvent.ACTION_DOWN) passengerCountTouched = true
             false
         }
-        spCount.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+        passengerCountSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(
                 parent: AdapterView<*>?,
                 view: View?,
                 position: Int,
                 id: Long,
             ) {
-                if (!countTouched) return
-                countTouched = false
+                if (!passengerCountTouched) return
+                passengerCountTouched = false
                 rebuildGenders(position + 1, emptyList())
             }
 
@@ -294,10 +295,16 @@ class MainActivity : Activity() {
     }
 
     private fun openBatterySettings() {
+        val exemption = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            .setData(Uri.parse("package:$packageName"))
         try {
-            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            startActivity(exemption)
         } catch (error: Exception) {
-            toast("Ayarlar açılamadı: ${error.message}")
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (fallback: Exception) {
+                toast("Ayarlar açılamadı: ${fallback.message}")
+            }
         }
     }
 
@@ -313,7 +320,7 @@ class MainActivity : Activity() {
 
     private fun rebuildGenders(count: Int, keep: List<String>) {
         val previous = keep.ifEmpty { currentGenders() }
-        boxGenders.removeAllViews()
+        genderLayout.removeAllViews()
         genderSpinners.clear()
         for (index in 0 until count) {
             val label = TextView(this).apply {
@@ -322,45 +329,45 @@ class MainActivity : Activity() {
             }
             val spinner = widgets.spinner(listOf("Kadın", "Erkek"))
             spinner.setSelection(if (previous.getOrNull(index) == "E") 1 else 0)
-            boxGenders.addView(label)
-            boxGenders.addView(spinner)
+            genderLayout.addView(label)
+            genderLayout.addView(spinner)
             genderSpinners.add(spinner)
         }
-        cbSide.text = if (count > 2) {
+        sideBySideCheck.text = if (count > 2) {
             "Aynı sırada oturmak istiyoruz"
         } else {
             "Yan yana oturmak istiyoruz"
         }
-        cbSide.isEnabled = count > 1
-        cbFacing.isEnabled = count > 1
+        sideBySideCheck.isEnabled = count > 1
+        facingCheck.isEnabled = count > 1
         if (count == 1) {
-            cbSide.isChecked = false
-            cbFacing.isChecked = false
+            sideBySideCheck.isChecked = false
+            facingCheck.isChecked = false
         }
     }
 
     private fun renderStations() {
-        btnFrom.text = "Nereden: ${from?.name ?: "seçin"}"
-        btnTo.text = "Nereye: ${to?.name ?: "seçin"}"
+        originButton.text = "Nereden: ${originStation?.name ?: "seçin"}"
+        destinationButton.text = "Nereye: ${destinationStation?.name ?: "seçin"}"
     }
 
-    private fun pickStation(isFrom: Boolean) {
+    private fun pickStation(choosingOrigin: Boolean) {
         picker.show(
-            choosingOrigin = isFrom,
-            origin = { from },
-            destination = { to },
-            token = etToken.text.toString().trim(),
-            base = etBase.text.toString().trim().ifEmpty { TcddApi.DEFAULT_BASE },
-        ) { nextFrom, nextTo ->
-            from = nextFrom
-            to = nextTo
+            choosingOrigin = choosingOrigin,
+            origin = { originStation },
+            destination = { destinationStation },
+            token = tokenInput.text.toString().trim(),
+            base = baseUrlInput.text.toString().trim().ifEmpty { TcddApi.DEFAULT_BASE },
+        ) { nextOrigin, nextDestination ->
+            originStation = nextOrigin
+            destinationStation = nextDestination
             renderStations()
         }
     }
 
     private fun renderDates() {
         val format = DateTimeFormatter.ofPattern("dd.MM.yyyy, EEEE", Locale.forLanguageTag("tr-TR"))
-        tvDates.text = if (dates.isEmpty()) {
+        datesText.text = if (dates.isEmpty()) {
             "Henüz tarih seçilmedi"
         } else {
             dates.joinToString("\n") { LocalDate.parse(it).format(format) }
@@ -368,8 +375,8 @@ class MainActivity : Activity() {
     }
 
     private fun renderTimes() {
-        btnTimeFrom.text = "Başlangıç: $timeFrom"
-        btnTimeTo.text = "Bitiş: $timeTo"
+        timeFromButton.text = "Başlangıç: $timeFrom"
+        timeToButton.text = "Bitiş: $timeTo"
     }
 
     private fun addDate() {
@@ -388,13 +395,13 @@ class MainActivity : Activity() {
         dialog.show()
     }
 
-    private fun pickTime(isFrom: Boolean) {
-        val parts = (if (isFrom) timeFrom else timeTo).split(":")
+    private fun pickTime(choosingStart: Boolean) {
+        val parts = (if (choosingStart) timeFrom else timeTo).split(":")
         TimePickerDialog(
             this,
             { _, hour, minute ->
                 val text = String.format(Locale.ROOT, "%02d:%02d", hour, minute)
-                if (isFrom) timeFrom = text else timeTo = text
+                if (choosingStart) timeFrom = text else timeTo = text
                 renderTimes()
             },
             parts[0].toInt(),
@@ -404,7 +411,7 @@ class MainActivity : Activity() {
     }
 
     private fun restore() {
-        etToken.setText(store.token)
+        tokenInput.setText(store.token)
         val saved = store.config
         if (saved == null) {
             renderStations()
@@ -413,30 +420,30 @@ class MainActivity : Activity() {
             return
         }
         val cached = store.cachedStations()
-        from = cached?.firstOrNull { it.id == saved.fromId }
-            ?: Station(saved.fromId, saved.fromName, emptyList())
-        to = cached?.firstOrNull { it.id == saved.toId }
-            ?: Station(saved.toId, saved.toName, emptyList())
+        originStation = cached?.firstOrNull { it.id == saved.originId }
+            ?: Station(saved.originId, saved.originName, emptyList())
+        destinationStation = cached?.firstOrNull { it.id == saved.destinationId }
+            ?: Station(saved.destinationId, saved.destinationName, emptyList())
         dates.clear()
         dates.addAll(saved.dates)
         timeFrom = saved.timeFrom
         timeTo = saved.timeTo
-        spCount.setSelection((saved.genders.size - 1).coerceIn(0, 5))
+        passengerCountSpinner.setSelection((saved.genders.size - 1).coerceIn(0, 5))
         rebuildGenders(saved.genders.size, saved.genders)
-        cbSide.isChecked = saved.sideBySide && saved.genders.size > 1
-        cbFacing.isChecked = saved.facing && saved.genders.size > 1
-        cbEco.isChecked = Kind.ECONOMY in saved.kinds
-        cbBiz.isChecked = Kind.BUSINESS in saved.kinds
-        cbWheel.isChecked = Kind.WHEELCHAIR in saved.kinds
+        sideBySideCheck.isChecked = saved.sideBySide && saved.genders.size > 1
+        facingCheck.isChecked = saved.facing && saved.genders.size > 1
+        economyCheck.isChecked = Kind.ECONOMY in saved.kinds
+        businessCheck.isChecked = Kind.BUSINESS in saved.kinds
+        wheelchairCheck.isChecked = Kind.WHEELCHAIR in saved.kinds
         when (saved.direction) {
-            "F" -> rbFwd.isChecked = true
-            "B" -> rbBack.isChecked = true
-            else -> rbAny.isChecked = true
+            "F" -> forwardRadio.isChecked = true
+            "B" -> backwardRadio.isChecked = true
+            else -> anyDirectionRadio.isChecked = true
         }
-        cbStrict.isChecked = saved.strict
-        etInterval.setText(saved.intervalSec.toString())
-        etBase.setText(saved.baseUrl)
-        spRot.setSelection(
+        strictCheck.isChecked = saved.strict
+        intervalInput.setText(saved.intervalSec.toString())
+        baseUrlInput.setText(saved.baseUrl)
+        rotationSpinner.setSelection(
             when (saved.forwardRotation) {
                 0 -> 1
                 180 -> 2
@@ -449,16 +456,18 @@ class MainActivity : Activity() {
     }
 
     private fun buildConfig(): Config? {
-        val origin = from
-        val destination = to
+        val origin = originStation
+        val destination = destinationStation
         val error = configError(origin, destination)
         if (error != null) {
             toast(error)
             return null
         }
-        val interval = etInterval.text.toString().trim().toIntOrNull()
-        if (interval == null || interval < 60 || interval > 86400) {
-            toast("Kontrol aralığı 60 ile 86400 saniye arasında olmalı")
+        val interval = intervalInput.text.toString().trim().toIntOrNull()
+        val minimum = SeatAlarmPolicy.MINIMUM_INTERVAL_SECONDS
+        val maximum = SeatAlarmPolicy.MAXIMUM_INTERVAL_SECONDS
+        if (interval == null || interval < minimum || interval > maximum) {
+            toast("Kontrol aralığı $minimum ile $maximum saniye arasında olmalı")
             return null
         }
         val kinds = selectedKinds()
@@ -467,22 +476,22 @@ class MainActivity : Activity() {
             return null
         }
         return Config(
-            fromId = origin!!.id,
-            fromName = origin.name,
-            toId = destination!!.id,
-            toName = destination.name,
+            originId = origin!!.id,
+            originName = origin.name,
+            destinationId = destination!!.id,
+            destinationName = destination.name,
             dates = dates.toList(),
             timeFrom = timeFrom,
             timeTo = timeTo,
             genders = currentGenders(),
             kinds = kinds,
-            sideBySide = genderSpinners.size > 1 && cbSide.isChecked,
-            facing = genderSpinners.size > 1 && cbFacing.isChecked,
+            sideBySide = genderSpinners.size > 1 && sideBySideCheck.isChecked,
+            facing = genderSpinners.size > 1 && facingCheck.isChecked,
             direction = selectedDirection(),
-            strict = cbStrict.isChecked,
+            strict = strictCheck.isChecked,
             intervalSec = interval,
             forwardRotation = selectedRotation(),
-            baseUrl = etBase.text.toString().trim().ifEmpty { TcddApi.DEFAULT_BASE },
+            baseUrl = baseUrlInput.text.toString().trim().ifEmpty { TcddApi.DEFAULT_BASE },
         )
     }
 
@@ -498,19 +507,19 @@ class MainActivity : Activity() {
 
     private fun selectedKinds(): LinkedHashSet<Kind> {
         val kinds = LinkedHashSet<Kind>()
-        if (cbEco.isChecked) kinds.add(Kind.ECONOMY)
-        if (cbBiz.isChecked) kinds.add(Kind.BUSINESS)
-        if (cbWheel.isChecked) kinds.add(Kind.WHEELCHAIR)
+        if (economyCheck.isChecked) kinds.add(Kind.ECONOMY)
+        if (businessCheck.isChecked) kinds.add(Kind.BUSINESS)
+        if (wheelchairCheck.isChecked) kinds.add(Kind.WHEELCHAIR)
         return kinds
     }
 
     private fun selectedDirection(): String = when {
-        rbFwd.isChecked -> "F"
-        rbBack.isChecked -> "B"
+        forwardRadio.isChecked -> "F"
+        backwardRadio.isChecked -> "B"
         else -> "A"
     }
 
-    private fun selectedRotation(): Int? = when (spRot.selectedItemPosition) {
+    private fun selectedRotation(): Int? = when (rotationSpinner.selectedItemPosition) {
         1 -> 0
         2 -> 180
         else -> null
@@ -550,17 +559,17 @@ class MainActivity : Activity() {
         val config = buildConfig() ?: return
         withNotificationPermission {
             store.config = config
-            store.token = etToken.text.toString().trim()
+            store.token = tokenInput.text.toString().trim()
             store.clearState()
             if (store.token.isEmpty()) {
-                Bus.log(
+                WatchStatus.log(
                     "Uyarı: token girilmedi. Sunucu isteği reddederse " +
                         "Gelişmiş bölümünden token ekleyin.",
                 )
             }
             Notifier.ensureChannels(this)
-            val intent = Intent(this, MonitorService::class.java)
-                .setAction(MonitorService.ACTION_START)
+            val intent = Intent(this, SeatAlarmService::class.java)
+                .setAction(SeatAlarmPolicy.ACTION_START)
             startForegroundService(intent)
             toast("Takip başlatıldı")
         }
@@ -568,17 +577,21 @@ class MainActivity : Activity() {
 
     private fun stopClicked() {
         store.running = false
-        stopService(Intent(this, MonitorService::class.java))
+        WatchStatus.running = false
+        startService(
+            Intent(this, SeatAlarmService::class.java)
+                .setAction(SeatAlarmPolicy.ACTION_STOP),
+        )
         refreshStatus()
     }
 
     private fun refreshStatus() {
-        val running = Bus.running
-        btnStart.isEnabled = !running
-        btnStop.isEnabled = running
-        tvStatus.text = if (running) "● Takip çalışıyor" else "○ Takip kapalı"
-        val lines = Bus.snapshot()
-        tvLog.text = if (lines.isEmpty()) {
+        val running = WatchStatus.running
+        startButton.isEnabled = !running
+        stopButton.isEnabled = running
+        statusText.text = if (running) "● Takip çalışıyor" else "○ Takip kapalı"
+        val lines = WatchStatus.snapshot()
+        logText.text = if (lines.isEmpty()) {
             "Henüz kayıt yok."
         } else {
             lines.takeLast(80).reversed().joinToString("\n")

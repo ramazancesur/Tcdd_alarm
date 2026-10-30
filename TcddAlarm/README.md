@@ -8,7 +8,8 @@ Seçtiğiniz günlerde ve saat aralığında, TCDD e-bilet'te uygun boş koltuk 
 - Yolcu sayısı, yolcu başına cinsiyet; yan yana ve karşılıklı koltuk seçenekleri
 - Koltuk tipi: Ekonomi, Business, Tekerlekli sandalye
 - Koltuk yönü: ileri / geri / fark etmez (gelişmiş ayarda yön kalibrasyonu)
-- Ön plan servisi + kalıcı bildirim ("Durdur" düğmeli); ekran kapalıyken de çalışır
+- Ön plan servisi + kalıcı bildirim ("Durdur" düğmeli); uygulama kapatılsa ve ekran kapalı olsa da çalışır
+- Telefon yeniden açılırsa, takibi siz durdurmadıysanız servis kaldığı yerden sürer
 - Önerilen koltuk satılırsa yenisini önerir; aynı öneri için yalnızca bir kez bildirir
 - Sunucu 3 kez üst üste 401/403/429 dönerse takip durur (engeli aşmaya çalışmaz); en az 60 sn aralık
 
@@ -22,7 +23,7 @@ Seçtiğiniz günlerde ve saat aralığında, TCDD e-bilet'te uygun boş koltuk 
 1. Uygulamayı açın, bildirim iznini verin.
 2. Gelişmiş bölümünden **Authorization token**'ı girin (tarayıcıda ebilet.tcddtasimacilik.gov.tr → F12 → Network → bir `tms` isteğinin `Authorization` başlığı). Süresi dolunca yenileyin.
 3. İstasyon, tarih, saat, yolcu ve tercihleri seçip **Başlat**.
-4. Gelişmiş bölümündeki **pil optimizasyonunu kapat** düğmesiyle uygulamayı muaf tutun (aksi halde bazı telefonlar servisi öldürür).
+4. Gelişmiş bölümündeki **pil optimizasyonunu kapat** düğmesi sistem muafiyet penceresini açar (açılmazsa ayarlar listesine düşer). Muaf tutmazsanız bazı telefonlar servisi öldürür.
 
 ## Dürüst sınırlar
 - Uç noktalar ve koltuk haritası şeması e-Bilet APK'sının **statik analizinden** çıkarıldı; gerçek sunucuya karşı denenmedi. `departureDate` biçimi (önceki gün 21:00) ve vagon no = `trainCarIndex` varsayımdır.

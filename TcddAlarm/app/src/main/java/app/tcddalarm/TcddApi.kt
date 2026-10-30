@@ -70,33 +70,35 @@ class TcddApi(
         }
     }
 
-    fun trains(cfg: Config, day: String): List<Train> {
+    fun trains(config: Config, day: String): List<Train> {
         val route = JSONObject()
-        route.put("departureStationId", cfg.fromId)
-        route.put("arrivalStationId", cfg.toId)
+        route.put("departureStationId", config.originId)
+        route.put("arrivalStationId", config.destinationId)
         route.put("departureDate", Responses.dateParam(day))
         val body = JSONObject()
+        body.put(
+            "passengerTypeCounts",
+            JSONArray().put(JSONObject().put("id", 0).put("count", config.genders.size)),
+        )
         body.put("searchRoutes", JSONArray().put(route))
-        body.put("passengerTypeCounts", JSONArray().put(JSONObject().put("id", 0).put("count", cfg.genders.size)))
         body.put("blTrainTypes", JSONArray().put("TURISTIK_TREN"))
         if (baseUrl.contains("web-api")) {
-            // web istemcisinin gönderdiği ek alanlar
-            route.put("departureStationName", cfg.fromName)
-            route.put("arrivalStationName", cfg.toName)
+            route.put("departureStationName", config.originName)
+            route.put("arrivalStationName", config.destinationName)
             body.put("searchReservation", false)
             body.put("searchType", "DOMESTIC")
         }
         val text = request("POST", "$baseUrl/train/train-availability", body.toString(), true)
-        return Responses.parseTrains(parseJson(text), cfg.kinds)
+        return Responses.parseTrains(parseJson(text), config.kinds)
     }
 
-    fun seatMap(cfg: Config, train: Train): List<Seat> {
+    fun seatMap(config: Config, train: Train): List<Seat> {
         val id = train.id ?: return emptyList()
         val body = JSONObject()
-        body.put("fromStationId", train.fromId ?: cfg.fromId)
-        body.put("toStationId", train.toId ?: cfg.toId)
+        body.put("fromStationId", train.departureStationId ?: config.originId)
+        body.put("toStationId", train.arrivalStationId ?: config.destinationId)
         body.put("trainId", id)
         val text = request("POST", "$baseUrl/seat-maps/load-by-train-id", body.toString(), true)
-        return SeatMapParser.parse(parseJson(text), cfg.forwardRotation)
+        return SeatMapParser.parse(parseJson(text), config.forwardRotation)
     }
 }

@@ -3,7 +3,12 @@ package app.tcddalarm
 /** Koltuk önerme motoru (Python sürümündeki seats.py'nin Kotlin karşılığı). */
 object Planner {
 
-    private class Ctx(val hasGroups: Boolean, val hasRot: Boolean, val hasDir: Boolean, val hasGender: Boolean)
+    private class Ctx(
+        val hasGroups: Boolean,
+        val hasRotation: Boolean,
+        val hasDirection: Boolean,
+        val hasGender: Boolean,
+    )
 
     private class Key(val unmet: Int, val w1: Int, val w2: Int, val w3: String, val num: Int, val no: String)
 
@@ -23,8 +28,8 @@ object Planner {
     fun blockKey(s: Seat): String? {
         val row = s.row
         val pos = s.pos
-        val blk = s.blk
-        if (blk != null && row != null) return "${s.wagon}|$row|$blk"
+        val block = s.block
+        if (block != null && row != null) return "${s.wagon}|$row|$block"
         if (row != null && pos != null) return "${s.wagon}|$row|${pos / 2}"
         val n = s.num ?: return null
         return "${s.wagon}|n|${(n - 1) / 2}"
@@ -45,7 +50,7 @@ object Planner {
         if (!ctx.hasGender) return true
         val key = blockKey(seat) ?: return true
         for (n in blocks[key].orEmpty()) {
-            if (n.sid == seat.sid || n.sid in mine || n.free) continue
+            if (n.seatId == seat.seatId || n.seatId in mine || n.free) continue
             // Cinsiyeti bilinmeyen dolu komşu kimseyi elemez.
             if (n.gender != null && n.gender != g) return false
         }
@@ -73,7 +78,7 @@ object Planner {
     private fun assign(
         chosen: List<Seat>, perms: List<List<String>>, blocks: Map<String, List<Seat>>, ctx: Ctx
     ): List<String>? {
-        val mine = chosen.map { it.sid }.toSet()
+        val mine = chosen.map { it.seatId }.toSet()
         for (perm in perms) {
             var ok = true
             for (i in chosen.indices) {
@@ -129,9 +134,9 @@ object Planner {
             return null
         }
         val groups = chosen.map { it.group }.toSet()
-        val rotations = chosen.mapNotNull { it.rot }.toSet()
+        val rotations = chosen.mapNotNull { it.rotation }.toSet()
         val sameGroup = groups.size == 1 && null !in groups
-        val faces = rotations.size >= 2 || !ctx.hasRot
+        val faces = rotations.size >= 2 || !ctx.hasRotation
         return if (sameGroup && faces) null else "karşılıklı"
     }
 
@@ -144,7 +149,7 @@ object Planner {
         val wantsDirection = prefs.direction == "F" || prefs.direction == "B"
         val facingOverrides = chosen.size > 1 && prefs.facing
         if (!wantsDirection || facingOverrides) return null
-        if (!ctx.hasDir) {
+        if (!ctx.hasDirection) {
             notes.add(
                 "Koltuk yönü çözülemedi (ayarlardan 'İleri yön rotation değeri' " +
                     "seçilmemiş), bu tercih uygulanamadı.",
@@ -172,7 +177,7 @@ object Planner {
     private fun candidates(pool: List<Seat>, n: Int): List<List<Seat>> {
         val out = LinkedHashMap<Set<String>, List<Seat>>()
         fun add(t: List<Seat>) {
-            out.getOrPut(t.map { it.sid }.toSet()) { t }
+            out.getOrPut(t.map { it.seatId }.toSet()) { t }
         }
         val byWagon = LinkedHashMap<String, MutableList<Seat>>()
         for (s in pool) byWagon.getOrPut(s.wagon) { ArrayList() }.add(s)
@@ -218,8 +223,8 @@ object Planner {
         }
         val ctx = Ctx(
             hasGroups = seats.any { it.group != null },
-            hasRot = seats.any { it.rot != null },
-            hasDir = seats.any { it.direction != null },
+            hasRotation = seats.any { it.rotation != null },
+            hasDirection = seats.any { it.direction != null },
             hasGender = seats.any { !it.free && it.gender != null }
         )
         val perms = permutations(prefs.genders)
@@ -254,7 +259,7 @@ object Planner {
     }
 
     fun stillFree(ids: List<String>, seats: List<Seat>): Boolean {
-        val free = seats.filter { it.free }.map { it.sid }.toSet()
+        val free = seats.filter { it.free }.map { it.seatId }.toSet()
         return ids.all { it in free }
     }
 

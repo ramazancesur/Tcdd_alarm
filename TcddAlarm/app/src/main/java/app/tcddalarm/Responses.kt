@@ -74,9 +74,9 @@ object Responses {
     }
 
     private fun readTrain(train: JSONObject, kinds: Set<Kind>): Train {
-        val fromId = train.dbl("departureStationId")?.toInt()
-        val toId = train.dbl("arrivalStationId")?.toInt()
-        val departure = boardingTime(train, fromId)
+        val departureStationId = train.dbl("departureStationId")?.toInt()
+        val arrivalStationId = train.dbl("arrivalStationId")?.toInt()
+        val departure = boardingTime(train, departureStationId)
         val cabins = cabins(train, kinds)
         return Train(
             id = train.dbl("id")?.toInt() ?: train.dbl("trainId")?.toInt(),
@@ -84,12 +84,12 @@ object Responses {
             departure = departure,
             seats = cabins.values.sum(),
             cabins = cabins,
-            fromId = fromId,
-            toId = toId,
+            departureStationId = departureStationId,
+            arrivalStationId = arrivalStationId,
         )
     }
 
-    private fun boardingTime(train: JSONObject, fromId: Int?): ZonedDateTime? {
+    private fun boardingTime(train: JSONObject, departureStationId: Int?): ZonedDateTime? {
         var exact: ZonedDateTime? = null
         var first: ZonedDateTime? = null
         walkObjects(train) { obj ->
@@ -97,7 +97,9 @@ object Responses {
             val moment = timeOf(obj.opt("departureTime")) ?: return@walkObjects
             if (first == null) first = moment
             val stationId = obj.obj("segment")?.obj("departureStation")?.dbl("id")?.toInt()
-            if (exact == null && stationId != null && fromId != null && stationId == fromId) {
+            if (exact == null && stationId != null && departureStationId != null &&
+                stationId == departureStationId
+            ) {
                 exact = moment
             }
         }

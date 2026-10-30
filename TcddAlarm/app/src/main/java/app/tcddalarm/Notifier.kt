@@ -46,7 +46,7 @@ object Notifier {
     fun foreground(context: Context, text: String): Notification {
         val open = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val openPi = PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val stop = Intent(context, MonitorService::class.java).setAction(MonitorService.ACTION_STOP)
+        val stop = Intent(context, SeatAlarmService::class.java).setAction(SeatAlarmPolicy.ACTION_STOP)
         val stopPi = PendingIntent.getService(context, 1, stop, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val stopAction = Notification.Action.Builder(
             Icon.createWithResource(context, android.R.drawable.ic_menu_close_clear_cancel), "Durdur", stopPi

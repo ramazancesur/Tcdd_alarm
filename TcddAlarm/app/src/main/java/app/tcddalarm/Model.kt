@@ -43,11 +43,11 @@ data class Seat(
     val direction: String?,      // "F" ileri | "B" geri | null
     val group: String?,          // karşılıklı (masa) grubu
     val kind: Kind,
-    val rot: Int? = null,        // koltuğun dönüş açısı (0/180)
-    val blk: String? = null,     // yan yana oturan kesintisiz koltuk bloğu
+    val rotation: Int? = null,   // koltuğun dönüş açısı (0/180)
+    val block: String? = null,   // yan yana oturan kesintisiz koltuk bloğu
     val restrict: String? = null // koltuğa özel cinsiyet kısıtı: "K" | "E" | null
 ) {
-    val sid: String get() = "$wagon-$no"
+    val seatId: String get() = "$wagon-$no"
     val num: Int? get() = no.filter { it.isDigit() }.toIntOrNull()
 }
 
@@ -57,7 +57,7 @@ data class Plan(
     val unmet: List<String>,     // karşılanamayan tercihler
     val notes: List<String>      // veri eksikliği uyarıları
 ) {
-    val ids: List<String> get() = seats.map { it.sid }
+    val ids: List<String> get() = seats.map { it.seatId }
 }
 
 data class Train(
@@ -66,17 +66,18 @@ data class Train(
     val departure: ZonedDateTime?,
     val seats: Int,                 // seçili koltuk türlerindeki toplam boş koltuk
     val cabins: Map<String, Int>,   // kabin adı → boş koltuk (seçili türler)
-    val fromId: Int?,
-    val toId: Int?
+    val departureStationId: Int?,
+    val arrivalStationId: Int?
 ) {
-    fun hhmm(): String = departure?.withZoneSameInstant(TR_ZONE)?.format(HHMM) ?: "?"
+    fun departureClock(): String =
+        departure?.withZoneSameInstant(TR_ZONE)?.format(HHMM) ?: "?"
 }
 
 data class Config(
-    val fromId: Int,
-    val fromName: String,
-    val toId: Int,
-    val toName: String,
+    val originId: Int,
+    val originName: String,
+    val destinationId: Int,
+    val destinationName: String,
     val dates: List<String>,        // yyyy-MM-dd
     val timeFrom: String,           // HH:mm
     val timeTo: String,             // HH:mm
@@ -94,10 +95,10 @@ data class Config(
 
     fun toJson(): JSONObject {
         val o = JSONObject()
-        o.put("fromId", fromId)
-        o.put("fromName", fromName)
-        o.put("toId", toId)
-        o.put("toName", toName)
+        o.put("originId", originId)
+        o.put("originName", originName)
+        o.put("destinationId", destinationId)
+        o.put("destinationName", destinationName)
         o.put("dates", JSONArray(dates))
         o.put("timeFrom", timeFrom)
         o.put("timeTo", timeTo)
@@ -128,10 +129,10 @@ data class Config(
                 .mapNotNull { name -> Kind.entries.firstOrNull { it.name == name } }
                 .toSet()
             return Config(
-                fromId = o.dbl("fromId")?.toInt() ?: 0,
-                fromName = o.str("fromName") ?: "",
-                toId = o.dbl("toId")?.toInt() ?: 0,
-                toName = o.str("toName") ?: "",
+                originId = o.dbl("originId")?.toInt() ?: 0,
+                originName = o.str("originName") ?: "",
+                destinationId = o.dbl("destinationId")?.toInt() ?: 0,
+                destinationName = o.str("destinationName") ?: "",
                 dates = strings("dates"),
                 timeFrom = o.str("timeFrom") ?: "00:00",
                 timeTo = o.str("timeTo") ?: "23:59",

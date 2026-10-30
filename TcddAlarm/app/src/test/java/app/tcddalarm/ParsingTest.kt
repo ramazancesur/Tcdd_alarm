@@ -46,8 +46,8 @@ class ParsingTest {
         assertEquals(false, by.getValue("2").free)
         assertEquals("E", by.getValue("2").gender)
         // aynı blok: 1-2 ve 3-4; koridor bloğu böler
-        assertEquals(by.getValue("1").blk, by.getValue("2").blk)
-        assertNotEquals(by.getValue("1").blk, by.getValue("3").blk)
+        assertEquals(by.getValue("1").block, by.getValue("2").block)
+        assertNotEquals(by.getValue("1").block, by.getValue("3").block)
         // masa: karşılıklı sıralar aynı grupta, komşu masa farklı grupta
         assertNotNull(by.getValue("1").group)
         assertEquals(by.getValue("1").group, by.getValue("5").group)
@@ -70,7 +70,7 @@ class ParsingTest {
         val p = Planner.makePlan(sm, Prefs(listOf("E", "E"), setOf(Kind.ECONOMY), facing = true))!!
         assertTrue(p.unmet.isEmpty())
         assertEquals(1, p.seats.map { it.group }.toSet().size)
-        assertEquals(2, p.seats.map { it.rot }.toSet().size)
+        assertEquals(2, p.seats.map { it.rotation }.toSet().size)
     }
 
     @Test

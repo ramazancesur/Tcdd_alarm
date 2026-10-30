@@ -11,11 +11,11 @@ import org.json.JSONObject
  */
 object SeatMapParser {
 
-    fun parse(root: Any?, forwardRot: Int?): List<Seat> {
+    fun parse(root: Any?, forwardRotation: Int?): List<Seat> {
         val wagons = findWagonList(root) ?: return emptyList()
-        val fr = forwardRot?.let { ((it % 360) + 360) % 360 }
+        val normalized = forwardRotation?.let { ((it % 360) + 360) % 360 }
         val out = ArrayList<Seat>()
-        for (w in wagons) out.addAll(parseWagon(w, fr))
+        for (wagon in wagons) out.addAll(parseWagon(wagon, normalized))
         return out
     }
 
@@ -93,25 +93,31 @@ object SeatMapParser {
         return kindOf(carName, r.item.str("name"), r.item.obj("itemType")?.str("name"), r.t.str("name"), props.toString())
     }
 
-    private fun parseWagon(w: JSONObject, forwardRot: Int?): List<Seat> {
-        val tpl = w.obj("seatMapTemplate") ?: JSONObject()
-        val car = tpl.obj("car") ?: JSONObject()
-        val wagon = w.str("trainCarIndex") ?: w.str("trainCarId") ?: car.str("name") ?: car.str("id") ?: "?"
+    private fun parseWagon(wagonObject: JSONObject, forwardRotation: Int?): List<Seat> {
+        val template = wagonObject.obj("seatMapTemplate") ?: JSONObject()
+        val car = template.obj("car") ?: JSONObject()
+        val wagon = wagonObject.str("trainCarIndex")
+            ?: wagonObject.str("trainCarId")
+            ?: car.str("name")
+            ?: car.str("id")
+            ?: "?"
         val carName = car.str("name") ?: ""
-        val onSale = w.opt("trainCarOnSale") != false
+        val onSale = wagonObject.opt("trainCarOnSale") != false
 
         val occupied = HashMap<String, List<String>>()
-        for (a in w.optJSONArray("allocationSeats").objects()) {
-            val n = a.str("seatNumber") ?: continue
-            occupied[n] = genderList(a.optJSONArray("genders"))
+        for (allocation in wagonObject.optJSONArray("allocationSeats").objects()) {
+            val number = allocation.str("seatNumber") ?: continue
+            occupied[number] = genderList(allocation.optJSONArray("genders"))
         }
 
         val raw = ArrayList<Raw>()
-        for (t in tpl.optJSONArray("seatMaps").objects()) {
-            val no = t.str("seatNumber") ?: continue
-            val item = t.obj("item") ?: JSONObject()
+        for (templateSeat in template.optJSONArray("seatMaps").objects()) {
+            val number = templateSeat.str("seatNumber") ?: continue
+            val item = templateSeat.obj("item") ?: JSONObject()
             if (item.opt("saleable") == false) continue // koltuk değil (koridor, masa, WC vb.)
-            raw.add(Raw(no, t.dbl("positionX"), t.dbl("positionY"), t, item))
+            raw.add(
+                Raw(number, templateSeat.dbl("positionX"), templateSeat.dbl("positionY"), templateSeat, item),
+            )
         }
         if (raw.isEmpty()) return emptyList()
 
@@ -135,7 +141,7 @@ object SeatMapParser {
         }
 
         // Kesintisiz blok: yan yana oturan koltuklar; koridor boşluğu bloğu böler.
-        val blk = HashMap<String, String>()
+        val blockBySeat = HashMap<String, String>()
         if (havePos) {
             val rows = HashMap<Double, MutableList<Pair<Double, String>>>()
             for ((no, p) in lc) rows.getOrPut(p.first) { ArrayList() }.add(Pair(p.second, no))
@@ -145,16 +151,20 @@ object SeatMapParser {
                 var prev: Double? = null
                 for ((c, no) in lst) {
                     if (prev == null || c - prev > uC * 1.01) start = c
-                    blk[no] = fmt(start)
+                    blockBySeat[no] = fmt(start)
                     prev = c
                 }
             }
         }
 
-        val rotOf = HashMap<String, Int?>()
-        for (r in raw) {
-            val d = r.t.dbl("rotation")
-            rotOf[r.no] = if (d == null) null else ((d.toInt() % 360) + 360) % 360
+        val rotationBySeat = HashMap<String, Int?>()
+        for (seat in raw) {
+            val degrees = seat.t.dbl("rotation")
+            rotationBySeat[seat.no] = if (degrees == null) {
+                null
+            } else {
+                ((degrees.toInt() % 360) + 360) % 360
+            }
         }
         val byPos = HashMap<Pair<Double, Double>, String>()
         for ((no, p) in lc) byPos[p] = no
@@ -162,13 +172,14 @@ object SeatMapParser {
         // Karşılıklı (masa) grubu: uzunlamasına komşu ve zıt (180°) yöne bakan koltuk çifti
         fun facingGroup(no: String): String? {
             if (!havePos) return null
-            val rn = rotOf[no] ?: return null
+            val seatRotation = rotationBySeat[no] ?: return null
             val p = lc[no] ?: return null
             for (dL in doubleArrayOf(-uL, uL)) {
                 val other = byPos[Pair(p.first + dL, p.second)] ?: continue
-                val ro = rotOf[other] ?: continue
-                if ((((ro - rn) % 360) + 360) % 360 == 180) {
-                    return "$wagon-${fmt(minOf(p.first, p.first + dL))}-${blk[no]}"
+                val otherRotation = rotationBySeat[other] ?: continue
+                val turn = (((otherRotation - seatRotation) % 360) + 360) % 360
+                if (turn == 180) {
+                    return "$wagon-${fmt(minOf(p.first, p.first + dL))}-${blockBySeat[no]}"
                 }
             }
             return null
@@ -179,10 +190,14 @@ object SeatMapParser {
             val no = r.no
             val genders = occupied[no]
             val allocated = r.t.optBoolean("isAllocated", false) || genders != null
-            val rot = rotOf[no]
+            val rotation = rotationBySeat[no]
             var direction: String? = null
-            if (forwardRot != null && rot != null) {
-                direction = if (rot == forwardRot) "F" else if (rot == (forwardRot + 180) % 360) "B" else null
+            if (forwardRotation != null && rotation != null) {
+                direction = when (rotation) {
+                    forwardRotation -> "F"
+                    (forwardRotation + 180) % 360 -> "B"
+                    else -> null
+                }
             }
             var row: Int? = null
             var pos: Int? = null
@@ -202,8 +217,8 @@ object SeatMapParser {
                     direction = direction,
                     group = facingGroup(no),
                     kind = kindFor(carName, r),
-                    rot = rot,
-                    blk = blk[no],
+                    rotation = rotation,
+                    block = blockBySeat[no],
                     restrict = normGender(r.t.str("genderRestriction"))
                 )
             )
