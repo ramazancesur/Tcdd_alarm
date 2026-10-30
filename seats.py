@@ -1,52 +1,63 @@
-"""Koltuk modeli, koltuk haritası ayrıştırıcı ve koltuk önerme motoru.
+"""Koltuk haritası ayrıştırıcı ve koltuk önerme motoru.
 
-Koltuk haritası şeması (alan adları) e-bilet mobil uygulamasının APK'sından okundu
-(SeatMapsResponse → seatMaps[] → seatMapTemplate.seatMaps[] + allocationSeats[]).
-Alan değerlerinin anlamı (rotation, genderRestriction vb.) gerçek bir cevapla
-doğrulanmadı; doğrulanamayan yerler "not" olarak raporlanır, sessizce yok sayılmaz.
+Alan adları e-bilet mobil uygulamasının APK'sından okundu. Android sürümündeki
+SeatMapParser ve Planner ile aynı kuralları uygular.
 """
 from __future__ import annotations
 
-import itertools
-import os
-import random
+import enum
+import math
 import unicodedata
 from dataclasses import dataclass, field
+from itertools import combinations, permutations
+
+
+class Kind(enum.Enum):
+    ECONOMY = "Ekonomi"
+    BUSINESS = "Business"
+    WHEELCHAIR = "Tekerlekli sandalye"
 
 
 def tr_norm(s: str) -> str:
-    """Türkçe harfleri ve büyük/küçük farkını yok sayarak karşılaştırma için normalize eder."""
-    s = s.replace("İ", "i").replace("I", "ı").lower().replace("ı", "i")
-    s = unicodedata.normalize("NFKD", s)
-    return "".join(c for c in s if not unicodedata.combining(c))
+    """Türkçe harfleri ve büyük/küçük farkını yok sayarak karşılaştırır."""
+    t = s.replace("İ", "i").replace("I", "ı").lower().replace("ı", "i")
+    d = unicodedata.normalize("NFKD", t)
+    return "".join(ch for ch in d if unicodedata.category(ch) != "Mn")
 
 
-def _env_int(name: str) -> int | None:
-    v = os.getenv(name, "").strip()
-    return int(v) % 360 if v.lstrip("-").isdigit() else None
+def kind_of(*texts: str | None) -> Kind:
+    t = " ".join(tr_norm(x) for x in texts if x)
+    if "tekerlek" in t or "wheelchair" in t:
+        return Kind.WHEELCHAIR
+    if "busines" in t:
+        return Kind.BUSINESS
+    return Kind.ECONOMY
 
 
-# Koltuğun "trenin gidiş yönüne bakması" hangi rotation değerine karşılık geliyor?
-# Gerçek cevapta bir koltuğa bakıp 0 veya 180 olarak ayarlayın (TCDD_FORWARD_ROTATION).
-# Ayarlanmazsa ileri/geri tercihi uygulanamaz ve bildirimde not düşülür.
-FORWARD_ROT: int | None = _env_int("TCDD_FORWARD_ROTATION")
+@dataclass
+class Prefs:
+    genders: list[str]
+    side_by_side: bool = False
+    facing: bool = False
+    direction: str = "A"  # F ileri, B geri, A fark etmez
+    strict: bool = False
+    kinds: set[Kind] = field(default_factory=lambda: {Kind.ECONOMY, Kind.BUSINESS})
 
 
-# --- Modeller -------------------------------------------------------------------
-@dataclass(frozen=True)
+@dataclass
 class Seat:
     wagon: str
     no: str
     row: int | None
-    pos: int | None          # sıradaki sütun (0'dan başlar)
+    pos: int | None
     free: bool
-    gender: str | None       # dolu koltuktaki yolcunun cinsiyeti: "K" | "E" | None
-    direction: str | None    # "F" ileri | "B" geri | None
-    group: str | None        # karşılıklı (masa) grubu
-    cabin: str
-    rot: int | None = None       # koltuğun dönüş açısı (0/180)
-    blk: str | None = None       # yan yana oturan kesintisiz koltuk bloğu
-    restrict: str | None = None  # koltuğa özel cinsiyet kısıtı: "K" | "E" | None
+    gender: str | None
+    direction: str | None
+    group: str | None
+    kind: Kind
+    rot: int | None = None
+    blk: str | None = None
+    restrict: str | None = None
 
     @property
     def sid(self) -> str:
@@ -59,78 +70,29 @@ class Seat:
 
 
 @dataclass
-class Prefs:
-    genders: list[str]                 # her yolcu için "K" veya "E"
-    side_by_side: bool = False         # 2 kişi: yan yana, 3+ kişi: aynı sıra
-    facing: bool = False               # karşılıklı koltuk
-    direction: str = "A"               # "F" ileri, "B" geri, "A" fark etmez
-    strict: bool = False               # True: tercih karşılanmıyorsa öneri yapma
-    cabin: str = ""                    # vagon/kabin filtresi (boş = hepsi)
-
-
-@dataclass
 class Plan:
-    seats: tuple[Seat, ...]
-    genders: tuple[str, ...]
-    unmet: list[str] = field(default_factory=list)   # karşılanamayan tercihler
-    notes: list[str] = field(default_factory=list)   # veri eksikliği uyarıları
+    seats: list[Seat]
+    genders: list[str]
+    unmet: list[str]
+    notes: list[str]
 
     @property
     def ids(self) -> list[str]:
         return [s.sid for s in self.seats]
 
 
-@dataclass
-class Ctx:
-    has_groups: bool
-    has_rot: bool
-    has_dir: bool
-    has_gender: bool
-
-
-# --- Ayrıştırma yardımcıları ----------------------------------------------------
-def _g(d: dict, *keys):
-    for k in keys:
-        if k in d and d[k] not in (None, ""):
-            return d[k]
-    return None
-
-
-def norm_gender(v) -> str | None:
-    if not isinstance(v, str):
+def _jstr(d: dict, k: str) -> str | None:
+    if k not in d or d[k] is None:
         return None
-    s = v.strip().upper().replace("İ", "I")
-    if s in ("K", "F", "FEMALE", "WOMAN", "KADIN"):
-        return "K"
-    if s in ("E", "M", "MALE", "MAN", "ERKEK"):
-        return "E"
-    return None
+    s = str(d[k])
+    return s if s else None
 
 
-def _gender_list(v) -> list[str]:
-    out = []
-    for x in v if isinstance(v, list) else []:
-        if isinstance(x, dict):
-            x = _g(x, "gender", "name", "code", "type")
-        g = norm_gender(x)
-        if g:
-            out.append(g)
-    return out
-
-
-def norm_direction(v) -> str | None:
-    if not isinstance(v, str):
+def _jdbl(d: dict, k: str) -> float | None:
+    if k not in d or d[k] is None:
         return None
-    s = v.strip().upper().replace("İ", "I")
-    if s == "F" or "FORWARD" in s or "ILERI" in s:
-        return "F"
-    if s == "B" or "BACK" in s or "REVERSE" in s or "GERI" in s:
-        return "B"
-    return None
-
-
-def _num(v) -> float | None:
-    if isinstance(v, bool) or v is None:
+    v = d[k]
+    if isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
         return float(v)
@@ -142,159 +104,236 @@ def _num(v) -> float | None:
     return None
 
 
-def _unit(values: list[float]) -> float:
-    """Farklı koordinatlar arasındaki en küçük pozitif adım (ölçekten bağımsız komşuluk için)."""
-    vs = sorted(set(values))
-    gaps = [b - a for a, b in zip(vs, vs[1:]) if b - a > 0]
-    return min(gaps) if gaps else 1.0
-
-
-def _find_wagon_list(data) -> list[dict] | None:
-    """Cevapta 'seatMaps' (vagon listesi) içeren ilk yeri bulur."""
-    stack = [data]
-    while stack:
-        o = stack.pop()
-        if isinstance(o, dict):
-            lst = o.get("seatMaps")
-            if isinstance(lst, list) and lst and isinstance(lst[0], dict) and "seatMapTemplate" in lst[0]:
-                return lst
-            stack.extend(o.values())
-        elif isinstance(o, list):
-            stack.extend(o)
+def norm_gender(v) -> str | None:
+    if v is None:
+        return None
+    s = str(v).strip().upper().replace("İ", "I")
+    if s in ("K", "F", "FEMALE", "WOMAN", "KADIN"):
+        return "K"
+    if s in ("E", "M", "MALE", "MAN", "ERKEK"):
+        return "E"
     return None
 
 
-# --- Gerçek şema: SeatMapsResponse ----------------------------------------------
-def _parse_wagon(w: dict) -> list[Seat]:
-    tpl = w.get("seatMapTemplate") or {}
-    car = tpl.get("car") or {}
-    wagon = str(_g(w, "trainCarIndex", "trainCarId") or _g(car, "name", "id") or "?")
-    cabin = str(car.get("name") or "")
+def _gender_list(arr) -> list[str]:
+    if not isinstance(arr, list):
+        return []
+    out = []
+    for x in arr:
+        if isinstance(x, dict):
+            raw = x.get("gender") or x.get("name") or x.get("code") or x.get("type")
+        else:
+            raw = x
+        g = norm_gender(raw)
+        if g:
+            out.append(g)
+    return out
+
+
+def _unit(values: list[float]) -> float:
+    vs = sorted(set(values))
+    best = None
+    for i in range(1, len(vs)):
+        gap = vs[i] - vs[i - 1]
+        if gap > 0 and (best is None or gap < best):
+            best = gap
+    return 1.0 if best is None else best
+
+
+def _fmt(d: float) -> str:
+    if d == math.floor(d) and abs(d) < 1e15:
+        return str(int(d))
+    return str(d)
+
+
+def _norm_rot(d: float | None) -> int | None:
+    if d is None:
+        return None
+    return (int(d) % 360 + 360) % 360
+
+
+def _find_wagon_list(o):
+    if isinstance(o, dict):
+        lst = o.get("seatMaps")
+        if isinstance(lst, list) and lst and isinstance(lst[0], dict) and "seatMapTemplate" in lst[0]:
+            return lst
+        for v in o.values():
+            found = _find_wagon_list(v)
+            if found is not None:
+                return found
+    elif isinstance(o, list):
+        for v in o:
+            found = _find_wagon_list(v)
+            if found is not None:
+                return found
+    return None
+
+
+def _kind_for(car_name: str, item: dict, template: dict) -> Kind:
+    props = []
+    for p in item.get("itemProperties") or []:
+        if isinstance(p, dict) and p.get("name"):
+            props.append(str(p["name"]))
+    item_type = item.get("itemType") if isinstance(item.get("itemType"), dict) else {}
+    return kind_of(car_name, _jstr(item, "name"), _jstr(item_type, "name"), _jstr(template, "name"), " ".join(props))
+
+
+def _parse_wagon(w: dict, forward_rot: int | None) -> list[Seat]:
+    tpl = w.get("seatMapTemplate") if isinstance(w.get("seatMapTemplate"), dict) else {}
+    car = tpl.get("car") if isinstance(tpl.get("car"), dict) else {}
+    wagon = _jstr(w, "trainCarIndex") or _jstr(w, "trainCarId") or _jstr(car, "name") or _jstr(car, "id") or "?"
+    car_name = _jstr(car, "name") or ""
     on_sale = w.get("trainCarOnSale") is not False
 
     occupied: dict[str, list[str]] = {}
     for a in w.get("allocationSeats") or []:
-        if isinstance(a, dict) and a.get("seatNumber") is not None:
-            occupied[str(a["seatNumber"])] = _gender_list(a.get("genders"))
+        if not isinstance(a, dict):
+            continue
+        n = _jstr(a, "seatNumber")
+        if n is None:
+            continue
+        occupied[n] = _gender_list(a.get("genders"))
 
     raw = []
     for t in tpl.get("seatMaps") or []:
         if not isinstance(t, dict):
             continue
-        no = t.get("seatNumber")
-        item = t.get("item") or {}
-        if no in (None, "") or item.get("saleable") is False:
-            continue  # koltuk değil (koridor, masa, WC vb.)
-        x, y = _num(t.get("positionX")), _num(t.get("positionY"))
-        raw.append((str(no), x, y, t, item))
+        no = _jstr(t, "seatNumber")
+        if no is None:
+            continue
+        item = t.get("item") if isinstance(t.get("item"), dict) else {}
+        if item.get("saleable") is False:
+            continue
+        raw.append((no, _jdbl(t, "positionX"), _jdbl(t, "positionY"), t, item))
     if not raw:
         return []
 
-    xs = [r[1] for r in raw if r[1] is not None]
-    ys = [r[2] for r in raw if r[2] is not None]
-    have_pos = len(xs) == len(raw) == len(ys)
-    seats_xy = {}
+    have_pos = all(x is not None and y is not None for _, x, y, _, _ in raw)
+    lc: dict[str, tuple[float, float]] = {}
+    u_l = u_c = 1.0
+    min_l = min_c = 0.0
     if have_pos:
-        # Vagonun genişliği boyundan küçüktür: daha dar eksen "yan yana" (sütun) ekseni.
+        xs = [x for _, x, _, _, _ in raw]
+        ys = [y for _, _, y, _, _ in raw]
         cross_is_y = (max(ys) - min(ys)) <= (max(xs) - min(xs))
         ux, uy = _unit(xs), _unit(ys)
-        for no, x, y, t, item in raw:
-            L, C = (x, y) if cross_is_y else (y, x)
-            seats_xy[no] = (L, C)
-        uL, uC = (ux, uy) if cross_is_y else (uy, ux)
-        minL = min(v[0] for v in seats_xy.values())
-        minC = min(v[1] for v in seats_xy.values())
+        for no, x, y, _, _ in raw:
+            lc[no] = (x, y) if cross_is_y else (y, x)
+        u_l, u_c = (ux, uy) if cross_is_y else (uy, ux)
+        min_l = min(p[0] for p in lc.values())
+        min_c = min(p[1] for p in lc.values())
 
-    # Kesintisiz blok (yan yana oturan koltuklar; koridor blok keser)
     blk: dict[str, str] = {}
-    rows: dict[float, list[tuple[float, str]]] = {}
     if have_pos:
-        for no, (L, C) in seats_xy.items():
-            rows.setdefault(L, []).append((C, no))
-        for L, lst in rows.items():
-            lst.sort()
-            start, prev = None, None
-            for C, no in lst:
-                if prev is None or C - prev > uC * 1.01:
-                    start = C
-                blk[no] = f"{start:g}"
-                prev = C
+        rows: dict[float, list[tuple[float, str]]] = {}
+        for no, p in lc.items():
+            rows.setdefault(p[0], []).append((p[1], no))
+        for lst in rows.values():
+            lst.sort(key=lambda it: it[0])
+            start = 0.0
+            prev = None
+            for c, no in lst:
+                if prev is None or c - prev > u_c * 1.01:
+                    start = c
+                blk[no] = _fmt(start)
+                prev = c
 
-    rot_of = {no: (int(r) % 360 if (r := _num(t.get("rotation"))) is not None else None) for no, _, _, t, _ in raw}
-    by_pos = {seats_xy[no]: no for no in seats_xy} if have_pos else {}
+    rot_of: dict[str, int | None] = {}
+    for no, _, _, t, _ in raw:
+        rot_of[no] = _norm_rot(_jdbl(t, "rotation"))
+    by_pos = {p: no for no, p in lc.items()}
+    fr = None if forward_rot is None else (forward_rot % 360 + 360) % 360
 
     def facing_group(no: str) -> str | None:
-        if not have_pos or rot_of.get(no) is None:
+        if not have_pos:
             return None
-        L, C = seats_xy[no]
-        for dL in (-uL, uL):
-            other = by_pos.get((L + dL, C))
-            if other and rot_of.get(other) is not None and (rot_of[other] - rot_of[no]) % 360 == 180:
-                return f"{wagon}-{min(L, L + dL):g}-{blk.get(no)}"
+        rn = rot_of.get(no)
+        p = lc.get(no)
+        if rn is None or p is None:
+            return None
+        for d_l in (-u_l, u_l):
+            other = by_pos.get((p[0] + d_l, p[1]))
+            if other is None:
+                continue
+            ro = rot_of.get(other)
+            if ro is None:
+                continue
+            if (ro - rn) % 360 == 180:
+                return f"{wagon}-{_fmt(min(p[0], p[0] + d_l))}-{blk.get(no)}"
         return None
 
-    out = []
-    for no, x, y, t, item in raw:
+    out: list[Seat] = []
+    for no, _, _, t, item in raw:
         genders = occupied.get(no)
-        allocated = bool(t.get("isAllocated")) or genders is not None
-        rot = rot_of[no]
+        allocated = bool(t.get("isAllocated")) or no in occupied
+        rot = rot_of.get(no)
         direction = None
-        if FORWARD_ROT is not None and rot is not None:
-            direction = "F" if rot == FORWARD_ROT else ("B" if rot == (FORWARD_ROT + 180) % 360 else None)
+        if fr is not None and rot is not None:
+            if rot == fr:
+                direction = "F"
+            elif rot == (fr + 180) % 360:
+                direction = "B"
         row = pos = None
-        if have_pos:
-            L, C = seats_xy[no]
-            row, pos = round((L - minL) / uL), round((C - minC) / uC)
-        out.append(Seat(
-            wagon=wagon, no=no, row=row, pos=pos,
-            free=on_sale and not allocated,
-            gender=(genders[0] if genders else None),
-            direction=direction, group=facing_group(no), cabin=cabin,
-            rot=rot, blk=blk.get(no), restrict=norm_gender(t.get("genderRestriction")),
-        ))
+        p = lc.get(no)
+        if have_pos and p is not None:
+            row = int(round((p[0] - min_l) / u_l))
+            pos = int(round((p[1] - min_c) / u_c))
+        out.append(
+            Seat(
+                wagon=wagon,
+                no=no,
+                row=row,
+                pos=pos,
+                free=on_sale and not allocated,
+                gender=None if not genders else genders[0],
+                direction=direction,
+                group=facing_group(no),
+                kind=_kind_for(car_name, item, t),
+                rot=rot,
+                blk=blk.get(no),
+                restrict=norm_gender(_jstr(t, "genderRestriction")),
+            )
+        )
     return out
 
 
-def parse_seatmap(data) -> list[Seat]:
-    """Koltuk haritası JSON'undan Seat listesi çıkarır. Şema tanınmazsa boş liste döner."""
+def parse_seatmap(data, forward_rot: int | None = None) -> list[Seat]:
+    """Koltuk haritası cevabını Seat listesine çevirir. Tanınmazsa boş liste döner."""
     wagons = _find_wagon_list(data)
     if not wagons:
         return []
-    seats: list[Seat] = []
+    out: list[Seat] = []
     for w in wagons:
         if isinstance(w, dict):
-            seats.extend(_parse_wagon(w))
-    return seats
+            out.extend(_parse_wagon(w, forward_rot))
+    return out
 
 
-# --- Komşuluk ve sıra anahtarları -----------------------------------------------
-def block_key(s: Seat):
-    """Yan yana oturan koltuk bloğu. Blok bilgisi yoksa satır/sütun, o da yoksa numaraya göre."""
+# --- Planlayıcı ----------------------------------------------------------------
+
+
+def block_key(s: Seat) -> str | None:
     if s.blk is not None and s.row is not None:
-        return (s.wagon, s.row, s.blk)
+        return f"{s.wagon}|{s.row}|{s.blk}"
     if s.row is not None and s.pos is not None:
-        return (s.wagon, s.row, s.pos // 2)
-    n = s.num
-    return (s.wagon, "n", (n - 1) // 2) if n else None
+        return f"{s.wagon}|{s.row}|{s.pos // 2}"
+    if s.num is None:
+        return None
+    return f"{s.wagon}|n|{(s.num - 1) // 2}"
 
 
-def row_key(s: Seat):
+def row_key(s: Seat) -> str | None:
     if s.row is not None:
-        return (s.wagon, s.row)
-    n = s.num
-    return (s.wagon, "n", (n - 1) // 4) if n else None
+        return f"{s.wagon}|{s.row}"
+    if s.num is None:
+        return None
+    return f"{s.wagon}|n|{(s.num - 1) // 4}"
 
 
-def _wagon_sort(w: str):
-    return (0, int(w)) if w.isdigit() else (1, w)
-
-
-# --- Öneri motoru ---------------------------------------------------------------
-def _gender_ok(seat: Seat, g: str, blocks: dict, mine: set[str], ctx: Ctx) -> bool:
-    """Koltuğa özel kısıt + TCDD kuralı: yanındaki koltuk doluysa komşu aynı cinsiyetten olmalı."""
-    if seat.restrict and seat.restrict != g:
+def _gender_ok(seat: Seat, g: str, blocks: dict[str, list[Seat]], mine: set[str], has_gender: bool) -> bool:
+    if seat.restrict is not None and seat.restrict != g:
         return False
-    if not ctx.has_gender:
+    if not has_gender:
         return True
     key = block_key(seat)
     if key is None:
@@ -302,20 +341,26 @@ def _gender_ok(seat: Seat, g: str, blocks: dict, mine: set[str], ctx: Ctx) -> bo
     for n in blocks.get(key, []):
         if n.sid == seat.sid or n.sid in mine or n.free:
             continue
-        if n.gender != g:
+        # Cinsiyeti bilinmeyen dolu komşu kimseyi elemez.
+        if n.gender is not None and n.gender != g:
             return False
     return True
 
 
-def _assign(chosen: tuple[Seat, ...], genders: list[str], blocks: dict, ctx: Ctx):
+def _perms(items: list[str]) -> list[list[str]]:
+    uniq = {p for p in permutations(items)}
+    return sorted((list(p) for p in uniq), key=lambda p: "".join(p))
+
+
+def _assign(chosen: list[Seat], perms: list[list[str]], blocks, has_gender: bool) -> list[str] | None:
     mine = {s.sid for s in chosen}
-    for perm in sorted(set(itertools.permutations(genders))):
-        if all(_gender_ok(s, g, blocks, mine, ctx) for s, g in zip(chosen, perm)):
+    for perm in perms:
+        if all(_gender_ok(chosen[i], perm[i], blocks, mine, has_gender) for i in range(len(chosen))):
             return perm
     return None
 
 
-def _evaluate(chosen: tuple[Seat, ...], prefs: Prefs, ctx: Ctx) -> tuple[list[str], list[str]]:
+def _evaluate(chosen: list[Seat], prefs: Prefs, ctx: dict) -> tuple[list[str], list[str]]:
     n = len(chosen)
     unmet: list[str] = []
     notes: list[str] = []
@@ -329,58 +374,69 @@ def _evaluate(chosen: tuple[Seat, ...], prefs: Prefs, ctx: Ctx) -> tuple[list[st
         if not ok:
             unmet.append("yan yana / aynı sıra")
     if n > 1 and prefs.facing:
-        if not ctx.has_groups:
+        if not ctx["has_groups"]:
             notes.append("Karşılıklı koltuk bilgisi haritadan çıkarılamadı, bu tercih uygulanamadı.")
         else:
             groups = {s.group for s in chosen}
-            rots = {s.rot for s in chosen} - {None}
-            ok = len(groups) == 1 and None not in groups and (len(rots) >= 2 or not ctx.has_rot)
+            rots = {s.rot for s in chosen if s.rot is not None}
+            ok = len(groups) == 1 and None not in groups and (len(rots) >= 2 or not ctx["has_rot"])
             if not ok:
                 unmet.append("karşılıklı")
     if prefs.direction in ("F", "B") and not (n > 1 and prefs.facing):
-        if not ctx.has_dir:
-            notes.append("Koltuk yönü çözülemedi (TCDD_FORWARD_ROTATION ayarlı değil), bu tercih uygulanamadı.")
+        if not ctx["has_dir"]:
+            notes.append(
+                "Koltuk yönü çözülemedi (ayarlardan 'İleri yön rotation değeri' seçilmemiş), bu tercih uygulanamadı."
+            )
         elif any(s.direction != prefs.direction for s in chosen):
             unmet.append("koltuk yönü")
     return unmet, notes
 
 
-def _candidates(pool: list[Seat], n: int) -> list[tuple[Seat, ...]]:
-    out: dict[frozenset, tuple[Seat, ...]] = {}
+def _candidates(pool: list[Seat], n: int) -> list[list[Seat]]:
+    out: dict[frozenset[str], list[Seat]] = {}
 
-    def add(t) -> None:
-        out.setdefault(frozenset(s.sid for s in t), tuple(t))
+    def add(group: list[Seat]) -> None:
+        out.setdefault(frozenset(s.sid for s in group), group)
 
     by_wagon: dict[str, list[Seat]] = {}
     for s in pool:
         by_wagon.setdefault(s.wagon, []).append(s)
-
     for free in by_wagon.values():
         if n == 1:
             for s in free:
-                add((s,))
+                add([s])
             continue
         groups: dict[str, list[Seat]] = {}
-        rows: dict = {}
+        rows: dict[str, list[Seat]] = {}
         for s in free:
-            if s.group:
+            if s.group is not None:
                 groups.setdefault(s.group, []).append(s)
             rk = row_key(s)
-            if rk:
+            if rk is not None:
                 rows.setdefault(rk, []).append(s)
-        if n <= 4:
+        if n <= 6:
             for g in groups.values():
                 if n <= len(g) <= 8:
-                    for c in itertools.combinations(g, n):
-                        add(c)
+                    for c in combinations(g, n):
+                        add(list(c))
             for r in rows.values():
-                if n <= len(r) <= 6:
-                    for c in itertools.combinations(r, n):
-                        add(c)
+                if n <= len(r) <= 8:
+                    for c in combinations(r, n):
+                        add(list(c))
         ordered = sorted(free, key=lambda s: (s.row or 0, s.pos or 0, s.num or 0))
-        for i in range(len(ordered) - n + 1):
-            add(ordered[i:i + n])
+        for i in range(0, len(ordered) - n + 1):
+            add(ordered[i : i + n])
     return list(out.values())
+
+
+def _plan_key(chosen: list[Seat], unmet: list[str]) -> tuple:
+    first = chosen[0]
+    try:
+        wn = int(first.wagon)
+        w1, w2, w3 = 0, wn, ""
+    except ValueError:
+        w1, w2, w3 = 1, 0, first.wagon
+    return (len(unmet), w1, w2, w3, first.num or 0, first.no)
 
 
 def make_plan(seats: list[Seat], prefs: Prefs) -> Plan | None:
@@ -388,38 +444,40 @@ def make_plan(seats: list[Seat], prefs: Prefs) -> Plan | None:
     n = len(prefs.genders)
     if n < 1 or not seats:
         return None
-    cabin = tr_norm(prefs.cabin)
-    pool = [
-        s for s in seats
-        if s.free and "tekerlek" not in tr_norm(s.cabin) and (not cabin or cabin in tr_norm(s.cabin))
-    ]
-    blocks: dict = {}
+    pool = [s for s in seats if s.free and s.kind in prefs.kinds]
+    blocks: dict[str, list[Seat]] = {}
     for s in seats:
         k = block_key(s)
-        if k:
+        if k is not None:
             blocks.setdefault(k, []).append(s)
-    ctx = Ctx(
-        has_groups=any(s.group for s in seats),
-        has_rot=any(s.rot is not None for s in seats),
-        has_dir=any(s.direction for s in seats),
-        has_gender=any(s.gender for s in seats if not s.free),
-    )
-
-    best = None
+    ctx = {
+        "has_groups": any(s.group is not None for s in seats),
+        "has_rot": any(s.rot is not None for s in seats),
+        "has_dir": any(s.direction is not None for s in seats),
+        "has_gender": any((not s.free) and s.gender is not None for s in seats),
+    }
+    perms = _perms(prefs.genders)
+    best_key = None
+    best: Plan | None = None
     for cand in _candidates(pool, n):
-        perm = _assign(cand, prefs.genders, blocks, ctx)
+        perm = _assign(cand, perms, blocks, ctx["has_gender"])
         if perm is None:
             continue
         unmet, notes = _evaluate(cand, prefs, ctx)
         if prefs.strict and unmet:
             continue
-        key = (len(unmet), _wagon_sort(cand[0].wagon), cand[0].num or 0, cand[0].no)
-        if best is None or key < best[0]:
-            best = (key, Plan(cand, perm, unmet, notes))
-    plan = best[1] if best else None
-    if plan and not ctx.has_gender:
-        plan.notes.append("Haritada dolu koltukların yolcu cinsiyeti yok, komşu cinsiyet kuralı kontrol edilemedi.")
-    return plan
+        key = _plan_key(cand, unmet)
+        if best_key is None or key < best_key:
+            best_key = key
+            best = Plan(cand, perm, unmet, notes)
+    if best is None:
+        return None
+    if not ctx["has_gender"]:
+        best.notes = [
+            *best.notes,
+            "Haritada dolu koltukların yolcu cinsiyeti yok, komşu cinsiyet kuralı kontrol edilemedi.",
+        ]
+    return best
 
 
 def still_free(ids: list[str], seats: list[Seat]) -> bool:
@@ -427,15 +485,17 @@ def still_free(ids: list[str], seats: list[Seat]) -> bool:
     return all(i in free for i in ids)
 
 
-GENDER_LABEL = {"K": "Kadın", "E": "Erkek"}
-DIR_LABEL = {"F": "ileri yön", "B": "geri yön"}
-
-
 def describe(plan: Plan) -> str:
     lines = []
-    for s, g in zip(plan.seats, plan.genders):
-        extra = ", ".join(x for x in (DIR_LABEL.get(s.direction or ""), s.cabin) if x)
-        lines.append(f"Vagon {s.wagon} · Koltuk {s.no} ({GENDER_LABEL.get(g, g)})" + (f" — {extra}" if extra else ""))
+    for seat, g in zip(plan.seats, plan.genders):
+        who = "Kadın" if g == "K" else "Erkek"
+        extra = []
+        if seat.direction == "F":
+            extra.append("ileri yön")
+        elif seat.direction == "B":
+            extra.append("geri yön")
+        extra.append(seat.kind.value)
+        lines.append(f"Vagon {seat.wagon} · Koltuk {seat.no} ({who}) — {', '.join(extra)}")
     if plan.unmet:
         lines.append("Karşılanamayan tercih: " + ", ".join(plan.unmet))
     for note in plan.notes:
@@ -443,56 +503,51 @@ def describe(plan: Plan) -> str:
     return "\n".join(lines)
 
 
-# --- Demo koltuk dünyası (ağ kullanmadan deneme için; gerçek şemayla aynı biçimde) --
 class DemoWorld:
-    """Her sorguda bir kısım koltuğun satıldığı sahte koltuk haritaları üretir."""
+    """Ağ olmadan denenebilir 2+2 vagon. Her tick bir boş koltuğu satılmış sayar."""
 
-    COLS = (0, 1, 3, 4)  # 2+2 düzen, 2. sütun koridor
-
-    def __init__(self, seed: int | None = None, wagons: int = 2, rows: int = 8):
-        self.rng = random.Random(seed)
-        self.wagons, self.rows = wagons, rows
-        self.state: dict = {}
-
-    def _init(self) -> list[dict]:
-        seats = []
-        for w in range(1, self.wagons + 1):
-            for r in range(self.rows):
-                for ci, c in enumerate(self.COLS):
-                    sold = self.rng.random() < 0.75
-                    seats.append({
-                        "wagon": w, "no": str(r * 4 + ci + 1), "x": r, "y": c,
-                        "free": not sold, "gender": self.rng.choice(["MALE", "FEMALE"]) if sold else None,
-                        "rot": 0 if r % 2 == 0 else 180,
-                    })
-        return seats
-
-    def _to_json(self, st: list[dict]) -> dict:
-        cars = []
-        for w in range(1, self.wagons + 1):
-            mine = [s for s in st if s["wagon"] == w]
-            cars.append({
-                "trainCarId": 1000 + w, "trainCarIndex": w, "trainCarOnSale": True,
-                "capacity": len(mine), "availableSeatCount": sum(1 for s in mine if s["free"]),
-                "seatMapTemplate": {
-                    "car": {"name": "EKONOMİ"}, "rowSize": self.rows, "colSize": 5,
-                    "seatMaps": [
-                        {"seatNumber": s["no"], "positionX": s["x"], "positionY": s["y"], "rotation": s["rot"],
-                         "isAllocated": not s["free"], "genderRestriction": None,
-                         "item": {"saleable": True, "cabinClassId": 1, "itemType": {"name": "SEAT"}}}
-                        for s in mine
-                    ],
-                },
-                "allocationSeats": [{"seatNumber": s["no"], "genders": [s["gender"]]} for s in mine if not s["free"]],
-            })
-        return {"seatMaps": cars}
+    def __init__(self) -> None:
+        self.sold: dict[tuple, set[str]] = {}
 
     def seatmap(self, key, tick: bool = True) -> dict:
-        st = self.state.get(key)
-        if st is None:
-            st = self.state[key] = self._init()
-        elif tick:
-            for s in st:
-                if s["free"] and self.rng.random() < 0.15:
-                    s["free"], s["gender"] = False, self.rng.choice(["MALE", "FEMALE"])
-        return self._to_json(st)
+        sold = self.sold.setdefault(key, {"2"})
+        if tick:
+            for n in range(1, 25):
+                s = str(n)
+                if s not in sold:
+                    sold.add(s)
+                    break
+        return _demo_wagon(sold)
+
+
+def _demo_wagon(sold: set[str]) -> dict:
+    seats = []
+    for r in range(6):
+        for i, y in enumerate((0, 2, 6, 8)):
+            no = str(r * 4 + i + 1)
+            rot = 0 if r % 2 == 0 else 180
+            seats.append(
+                {
+                    "seatNumber": no,
+                    "positionX": r * 2,
+                    "positionY": y,
+                    "rotation": rot,
+                    "isAllocated": no in sold and no != "2",
+                    "genderRestriction": None,
+                    "item": {"saleable": True, "itemType": {"name": "SEAT"}},
+                }
+            )
+    allocation = [{"seatNumber": n, "genders": ["MALE"] if n == "2" else []} for n in sorted(sold, key=lambda s: int(s))]
+    return {
+        "data": {
+            "seatMaps": [
+                {
+                    "trainCarId": 7,
+                    "trainCarIndex": 3,
+                    "trainCarOnSale": True,
+                    "seatMapTemplate": {"car": {"name": "EKONOMİ"}, "seatMaps": seats},
+                    "allocationSeats": allocation,
+                }
+            ]
+        }
+    }

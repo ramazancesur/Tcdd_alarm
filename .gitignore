@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+alarm.json
+state.json
+stations.json
+dumps/

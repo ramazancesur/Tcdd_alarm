@@ -28,13 +28,28 @@ from zoneinfo import ZoneInfo
 import requests
 
 import notify
-from seats import DemoWorld, Prefs, Seat, describe, make_plan, parse_seatmap, still_free, tr_norm
+from seats import DemoWorld, Kind, Prefs, Seat, describe, kind_of, make_plan, parse_seatmap, still_free, tr_norm
 
 TZ = ZoneInfo("Europe/Istanbul")
 HERE = Path(__file__).resolve().parent
 STATIONS_FILE = HERE / "stations.json"
 CONFIG_FILE = HERE / "alarm.json"
+STATE_FILE = HERE / "state.json"
 DUMP_DIR = HERE / "dumps"
+
+
+def load_dotenv() -> None:
+    env = HERE / ".env"
+    if not env.exists():
+        return
+    for line in env.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+load_dotenv()
 
 # --- TCDD ayarları (hepsi ortam değişkeniyle değiştirilebilir) -----------------
 # NOT: TCDD resmi bir API yayınlamıyor; aşağıdaki değerler e-bilet sitesinin kendi
@@ -56,18 +71,12 @@ DATE_FMT = os.getenv("TCDD_DATE_FMT", "%d-%m-%Y %H:%M:%S")
 UNIT_ID = os.getenv("TCDD_UNIT_ID", "3895")
 MIN_INTERVAL = 60  # saniye; sunucuyu yormamak için alt sınır
 SITE = "https://ebilet.tcddtasimacilik.gov.tr/"
-REQUIRED_CFG = {"genders", "notify", "side_by_side", "facing", "direction", "strict"}
-
-
-def load_dotenv() -> None:
-    env = HERE / ".env"
-    if not env.exists():
-        return
-    for line in env.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+REQUIRED_CFG = {"genders", "notify", "side_by_side", "facing", "direction", "strict", "kinds"}
+UA = os.getenv(
+    "TCDD_UA",
+    "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+)
 
 
 # --- Yardımcılar ----------------------------------------------------------------
@@ -78,6 +87,7 @@ def headers() -> dict:
         "Accept-Language": "tr",
         "Origin": "https://ebilet.tcddtasimacilik.gov.tr",
         "Referer": SITE,
+        "User-Agent": UA,
         "unit-id": UNIT_ID,
     }
     token = os.getenv("TCDD_TOKEN")
@@ -103,8 +113,9 @@ def _pair_ids(v) -> list:
     out = []
     for p in v if isinstance(v, list) else []:
         pid = p.get("id") if isinstance(p, dict) else p
-        if isinstance(pid, (int, str)) and not isinstance(pid, bool):
-            out.append(pid)
+        n = as_int(pid)
+        if n is not None:
+            out.append(n)
     return out
 
 
@@ -120,7 +131,7 @@ def parse_stations(data) -> list[dict]:
         for s in data:
             if not isinstance(s, dict) or s.get("ticketSaleActive") is False:
                 continue
-            sid = _pick(s, "id", "stationId", "station_id")
+            sid = as_int(_pick(s, "id", "stationId", "station_id"))
             name = _pick(s, "name", "stationName", "station_name")
             if sid is not None and name:
                 out.append({"id": sid, "name": str(name), "pairs": _pair_ids(s.get("pairs"))})
@@ -318,85 +329,187 @@ def build_config(stations: list[dict]) -> dict:
         {"soft": "Yine de en yakın koltuğu öner (eksik tercihi belirt)", "strict": "Sadece tüm tercihlere uyan koltuk varsa haber ver"},
         "soft",
     ) == "strict"
-    cabin = ask("Vagon tipi filtresi (örn. EKONOMİ, BUSİNESS; boş = hepsi)", "")
+    print("\n--- Koltuk türü ---")
+    kinds = []
+    if ask_yes("Ekonomi dahil edilsin mi?", "e"):
+        kinds.append(Kind.ECONOMY.name)
+    if ask_yes("Business dahil edilsin mi?", "e"):
+        kinds.append(Kind.BUSINESS.name)
+    if ask_yes("Tekerlekli sandalye dahil edilsin mi?", "h"):
+        kinds.append(Kind.WHEELCHAIR.name)
+    while not kinds:
+        print("  En az bir koltuk türü seçin.")
+        if ask_yes("Ekonomi?", "e"):
+            kinds.append(Kind.ECONOMY.name)
+        if ask_yes("Business?", "h"):
+            kinds.append(Kind.BUSINESS.name)
+        if ask_yes("Tekerlekli sandalye?", "h"):
+            kinds.append(Kind.WHEELCHAIR.name)
+    forward_rotation = None
+    if direction in ("F", "B"):
+        rot = ask_choice(
+            "İleri yöne bakan koltuğun rotation değeri (yön tercihi için):",
+            {"skip": "Bilmiyorum", "0": "rotation 0", "180": "rotation 180"},
+            "skip",
+        )
+        if rot != "skip":
+            forward_rotation = int(rot)
 
     settings = ask_notify()
     interval = ask_int(f"Kontrol aralığı (saniye, en az {MIN_INTERVAL})", 180, MIN_INTERVAL, 86400)
     return {
         "from": src, "to": dst, "dates": dates, "time_from": t_from, "time_to": t_to,
         "genders": genders, "side_by_side": side_by_side, "facing": facing,
-        "direction": direction, "strict": strict, "cabin": cabin,
-        "notify": settings, "interval": interval, "include_wheelchair": False,
+        "direction": direction, "strict": strict, "kinds": kinds,
+        "forward_rotation": forward_rotation,
+        "notify": settings, "interval": interval,
     }
+
+
+def kinds_from(cfg: dict) -> set[Kind]:
+    out = set()
+    for name in cfg.get("kinds") or []:
+        try:
+            out.add(Kind[name])
+        except KeyError:
+            out.add(kind_of(str(name)))
+    return out
 
 
 def prefs_from(cfg: dict) -> Prefs:
     return Prefs(
         genders=cfg["genders"], side_by_side=cfg["side_by_side"], facing=cfg["facing"],
-        direction=cfg["direction"], strict=cfg["strict"], cabin=cfg.get("cabin", ""),
+        direction=cfg["direction"], strict=cfg["strict"], kinds=kinds_from(cfg),
     )
 
 
+def date_param(day: str) -> str:
+    """Yerel gece yarısının UTC karşılığı: bir önceki gün 21:00 (Türkiye, UTC+3)."""
+    d = dt.date.fromisoformat(day) - dt.timedelta(days=1)
+    return dt.datetime.combine(d, dt.time(21, 0)).strftime(DATE_FMT)
+
+
+def as_int(v):
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v)
+    if isinstance(v, str):
+        try:
+            return int(float(v)) if v.strip() else None
+        except ValueError:
+            return None
+    return None
+
+
 # --- Sefer sorgusu --------------------------------------------------------------
-def find_all(obj, key):
-    """İç içe JSON'da verilen anahtarın tüm değerlerini döndürür."""
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k == key:
-                yield v
-            yield from find_all(v, key)
-    elif isinstance(obj, list):
-        for v in obj:
-            yield from find_all(v, key)
-
-
 def parse_time(v) -> dt.datetime | None:
+    if isinstance(v, bool):
+        return None
     if isinstance(v, (int, float)):
         return dt.datetime.fromtimestamp(v / 1000 if v > 1e11 else v, TZ)
     if isinstance(v, str):
-        for fmt in ("%b %d, %Y %I:%M:%S %p", "%d-%m-%Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"):
+        num = as_int(v) if v.strip().replace(".", "", 1).isdigit() else None
+        if num is not None and not any(c.isalpha() for c in v):
+            return parse_time(float(v) if "." in v else num)
+        for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%d-%m-%Y %H:%M:%S", "%b %d, %Y %I:%M:%S %p"):
             try:
                 t = dt.datetime.strptime(v, fmt)
                 return t if t.tzinfo else t.replace(tzinfo=TZ)
             except ValueError:
                 continue
+        try:
+            t = dt.datetime.fromisoformat(v)
+            return t if t.tzinfo else t.replace(tzinfo=TZ)
+        except ValueError:
+            return None
     return None
 
 
-def extract_trains(data, include_wheelchair: bool) -> list[dict]:
-    """Cevaptan [{id, name, departure, seats, cabins}] çıkarır (şekle toleranslı)."""
+def _walk(obj, fn) -> None:
+    if isinstance(obj, dict):
+        fn(obj)
+        for v in obj.values():
+            _walk(v, fn)
+    elif isinstance(obj, list):
+        for v in obj:
+            _walk(v, fn)
+
+
+def extract_trains(data, kinds: set[Kind]) -> list[dict]:
+    """Cevaptan tren listesi çıkarır. Kalkış saati, biniş istasyonunun segmentinden alınır."""
+    lists: list[list] = []
+    _walk(data, lambda o: lists.append(o["trains"]) if isinstance(o.get("trains"), list) else None)
     trains = []
-    for lst in find_all(data, "trains"):
-        if not isinstance(lst, list):
-            continue
+    for lst in lists:
         for t in lst:
             if not isinstance(t, dict):
                 continue
-            dep = next((parse_time(x) for x in find_all(t, "departureTime") if parse_time(x)), None)
+            from_id = as_int(t.get("departureStationId"))
+            to_id = as_int(t.get("arrivalStationId"))
+            exact: dt.datetime | None = None
+            first: dt.datetime | None = None
+
+            def on_time(o, _from=from_id) -> None:
+                nonlocal exact, first
+                if "departureTime" not in o:
+                    return
+                z = parse_time(o.get("departureTime"))
+                if z is None:
+                    return
+                if first is None:
+                    first = z
+                seg = o.get("segment") if isinstance(o.get("segment"), dict) else {}
+                dep_st = seg.get("departureStation") if isinstance(seg.get("departureStation"), dict) else {}
+                sid = as_int(dep_st.get("id"))
+                if exact is None and sid is not None and _from is not None and sid == _from:
+                    exact = z
+
+            _walk(t, on_time)
             cabins: dict[str, int] = {}
-            for ca_list in find_all(t, "cabinClassAvailabilities"):
-                for ca in (ca_list if isinstance(ca_list, list) else []):
-                    cname = str((ca.get("cabinClass") or {}).get("name") or ca.get("name") or "?")
-                    if not include_wheelchair and "tekerlek" in tr_norm(cname):
+
+            def on_cabins(o) -> None:
+                ca = o.get("cabinClassAvailabilities")
+                if not isinstance(ca, list):
+                    return
+                for c in ca:
+                    if not isinstance(c, dict):
                         continue
-                    cabins[cname] = cabins.get(cname, 0) + int(ca.get("availabilityCount") or 0)
-            name = _pick(t, "commercialName", "name") or next(iter(find_all(t, "commercialName")), "Tren")
-            tid = _pick(t, "id", "trainId") or next(iter(find_all(t, "trainId")), None)
+                    cabin = c.get("cabinClass") if isinstance(c.get("cabinClass"), dict) else {}
+                    cname = str(cabin.get("name") or c.get("name") or "?")
+                    cnt = as_int(c.get("availabilityCount")) or 0
+                    if kind_of(cname) in kinds:
+                        cabins[cname] = cabins.get(cname, 0) + cnt
+
+            _walk(t, on_cabins)
+            nested = None
+
+            def on_name(o) -> None:
+                nonlocal nested
+                if nested is None and o.get("commercialName"):
+                    nested = o.get("commercialName")
+
+            _walk(t, on_name)
+            name = t.get("commercialName") or t.get("name") or nested or "Tren"
+            tid = as_int(t.get("id"))
+            if tid is None:
+                tid = as_int(t.get("trainId"))
             trains.append({
-                "id": tid, "name": str(name), "departure": dep, "seats": sum(cabins.values()), "cabins": cabins,
-                "from_id": t.get("departureStationId"), "to_id": t.get("arrivalStationId"),
+                "id": tid, "name": str(name), "departure": exact or first,
+                "seats": sum(cabins.values()), "cabins": cabins, "from_id": from_id, "to_id": to_id,
             })
     return trains
 
 
 def query_day(cfg: dict, day: str) -> list[dict]:
-    d = dt.date.fromisoformat(day)
     payload = {
         "searchRoutes": [{
             "departureStationId": cfg["from"]["id"], "departureStationName": cfg["from"]["name"],
             "arrivalStationId": cfg["to"]["id"], "arrivalStationName": cfg["to"]["name"],
             # Yerel gece yarısı UTC'de bir gün önce 21:00'dir (Android sürümüyle aynı biçim)
-            "departureDate": (dt.datetime.combine(d, dt.time()) - dt.timedelta(hours=3)).strftime(DATE_FMT),
+            "departureDate": date_param(day),
         }],
         "passengerTypeCounts": [{"id": 0, "count": len(cfg["genders"])}],
         "searchReservation": False,
@@ -407,7 +520,7 @@ def query_day(cfg: dict, day: str) -> list[dict]:
     if r.status_code in (401, 403, 429):
         raise BlockedError(f"HTTP {r.status_code}")
     r.raise_for_status()
-    return extract_trains(r.json(), cfg.get("include_wheelchair", False))
+    return extract_trains(r.json(), kinds_from(cfg))
 
 
 def query_seatmap(cfg: dict, day: str, train: dict) -> list[Seat]:
@@ -429,17 +542,18 @@ def query_seatmap(cfg: dict, day: str, train: dict) -> list[Seat]:
         DUMP_DIR.mkdir(exist_ok=True)
         (DUMP_DIR / f"seatmap_{day}_{train['id']}.json").write_text(
             json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    return parse_seatmap(data)
+    return parse_seatmap(data, cfg.get("forward_rotation"))
 
 
 # --- Demo -----------------------------------------------------------------------
 def demo_trains(cfg: dict, day: str, world: DemoWorld) -> list[dict]:
     d = dt.date.fromisoformat(day)
+    kinds = kinds_from(cfg)
     out = []
     for h in (7, 9, 12, 15, 18):
         key = (day, h)
-        seats = parse_seatmap(world.seatmap(key, tick=False))
-        free = sum(1 for s in seats if s.free)
+        seats = parse_seatmap(world.seatmap(key, tick=False), cfg.get("forward_rotation"))
+        free = sum(1 for s in seats if s.free and s.kind in kinds)
         out.append({
             "id": f"{day}-{h}", "name": f"YHT {cfg['from']['name']} - {cfg['to']['name']}",
             "departure": dt.datetime.combine(d, dt.time(h, 30), TZ),
@@ -452,7 +566,31 @@ def demo_trains(cfg: dict, day: str, world: DemoWorld) -> list[dict]:
 def in_range(t: dt.datetime | None, a: str, b: str) -> bool:
     if t is None:
         return True  # saat okunamadıysa kaçırmamak için dahil et
-    return a <= t.strftime("%H:%M") <= b
+    local = t.astimezone(TZ) if t.tzinfo else t.replace(tzinfo=TZ)
+    return a <= local.strftime("%H:%M") <= b
+
+
+def load_state() -> dict:
+    active: dict[str, list[str]] = {}
+    count: set[str] = set()
+    if STATE_FILE.exists():
+        try:
+            raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            for k, v in (raw.get("active") or {}).items():
+                if isinstance(v, list):
+                    active[str(k)] = [str(x) for x in v]
+            count = {str(x) for x in (raw.get("count") or [])}
+        except (OSError, ValueError):
+            pass
+    return {"active": active, "count_notified": count}
+
+
+def save_state(state: dict) -> None:
+    payload = {
+        "active": state.get("active") or {},
+        "count": sorted(state.get("count_notified") or []),
+    }
+    STATE_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def handle_train(state: dict, key: tuple, train: dict, seats: list[Seat], prefs: Prefs, send, route: str) -> None:
@@ -464,15 +602,21 @@ def handle_train(state: dict, key: tuple, train: dict, seats: list[Seat], prefs:
     """
     active: dict = state.setdefault("active", {})
     count_notified: set = state.setdefault("count_notified", set())
-    day, name, hh = key
+    parts = key.split("|")
+    day, name, hh = (parts + ["?", "?", "?"])[:3]
     head = f"{route}\n{day} {hh} — {name}"
+    need = len(prefs.genders)
 
-    if train["seats"] <= 0:
+    if train["seats"] < need:
+        # Yeterli yer yoksa eski öneriyi sil; yer yeniden açılırsa haber verilsin.
         active.pop(key, None)
         count_notified.discard(key)
         return
 
     if not seats:
+        # Eldeki öneri duruyor; okunamayan harita onu düşürmesin ve tekrar saymasın.
+        if key in active:
+            return
         if key not in count_notified:
             count_notified.add(key)
             cab = ", ".join(f"{k}: {v}" for k, v in train["cabins"].items() if v)
@@ -505,30 +649,44 @@ def monitor(cfg: dict, demo: bool) -> None:
           f"  Saat: {cfg['time_from']}-{cfg['time_to']}  |  Yolcular: {pax}  |  Her {cfg['interval']} sn  |  Durdurmak için Ctrl+C\n")
 
     def send(subject: str, body: str) -> None:
-        notify.send(cfg["notify"], subject, body)
+        try:
+            notify.send(cfg["notify"], subject, body)
+        except Exception as e:  # noqa: BLE001
+            print(f"Bildirim gönderilemedi: {e}")
+
+    def persist() -> None:
+        if not demo:
+            save_state(state)
 
     world = DemoWorld() if demo else None
-    state: dict = {}
+    state = {"active": {}, "count_notified": set()} if demo else load_state()
+    need = len(cfg["genders"])
     blocked = 0
     while True:
         today = dt.datetime.now(TZ).date().isoformat()
         active_days = [d for d in cfg["dates"] if d >= today]
         if not active_days:
             print("Tüm tarihler geçti, çıkılıyor.")
+            persist()
             return
+        stop_cycle = False
         for day in active_days:
+            if stop_cycle:
+                break
             try:
                 trains = demo_trains(cfg, day, world) if demo else query_day(cfg, day)
                 blocked = 0
                 matching = [t for t in trains if in_range(t["departure"], cfg["time_from"], cfg["time_to"])]
                 print(f"[{dt.datetime.now(TZ):%H:%M:%S}] {day}: {len(matching)} sefer aralıkta, "
-                      f"{sum(1 for t in matching if t['seats'] > 0)} tanesinde yer var")
+                      f"{sum(1 for t in matching if t['seats'] >= need)} tanesinde yer var")
                 for t in matching:
-                    key = (day, t["name"], t["departure"].strftime("%H:%M") if t["departure"] else "?")
+                    dep = t["departure"].astimezone(TZ) if t["departure"] else None
+                    hh = dep.strftime("%H:%M") if dep else "?"
+                    key = f"{day}|{t['name']}|{hh}"
                     seats: list[Seat] = []
-                    if t["seats"] > 0:
+                    if t["seats"] >= need:
                         if demo:
-                            seats = parse_seatmap(world.seatmap((day, t["departure"].hour)))
+                            seats = parse_seatmap(world.seatmap((day, dep.hour if dep else 0)), cfg.get("forward_rotation"))
                         else:
                             try:
                                 seats = query_seatmap(cfg, day, t)
@@ -539,11 +697,14 @@ def monitor(cfg: dict, demo: bool) -> None:
                 blocked += 1
                 print(f"[{dt.datetime.now(TZ):%H:%M:%S}] Sunucu isteği reddetti ({e}). "
                       "Token süresi dolmuş ya da otomatik erişim engelleniyor olabilir.")
+                persist()
                 if blocked >= 3:
                     sys.exit("Üst üste 3 ret. Engeli aşmaya çalışmıyorum; yeni TCDD_TOKEN alıp tekrar deneyin "
                              "ya da bir süre bekleyin.")
+                stop_cycle = True
             except (requests.RequestException, ValueError) as e:
                 print(f"[{dt.datetime.now(TZ):%H:%M:%S}] {day}: sorgu hatası: {e}")
+        persist()
         time.sleep(cfg["interval"] + random.randint(0, 15))
 
 
@@ -585,13 +746,18 @@ def main() -> None:
             if cfg is None:
                 sys.exit("Önce alarmı bir kez kurun (python tcdd_alarm.py).")
             check_channel(cfg, False)
-            notify.send(cfg["notify"], "✅ TCDD alarm testi", "Bildirim kanalı çalışıyor.")
+            try:
+                notify.send(cfg["notify"], "✅ TCDD alarm testi", "Bildirim kanalı çalışıyor.")
+            except Exception as e:  # noqa: BLE001
+                sys.exit(f"Bildirim gönderilemedi: {e}")
             return
         if cfg is None:
             stations = DEMO_STATIONS if args.demo else get_stations(args.refresh_stations)
             cfg = build_config(stations)
             if not args.demo:
                 CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
+                if STATE_FILE.exists():
+                    STATE_FILE.unlink()
         check_channel(cfg, args.demo)
         monitor(cfg, args.demo)
     except (KeyboardInterrupt, EOFError):
